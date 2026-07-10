@@ -7,4 +7,9 @@ pillow
 onnx
 onnxruntime             # runs the ORIGINAL model for the verification step
 onnx2torch              # ONNX -> torch.nn.Module (coremltools dropped its ONNX frontend)
+onnxsim                 # folds Constant nodes into initializers before onnx2torch
 onnxscript              # only needed by make_reference_onnx.py on torch>=2.9
+
+# Optional — only for discrimination_test.py (real detection + alignment):
+# insightface
+# opencv-python-headless

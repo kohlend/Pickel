@@ -5,18 +5,18 @@ Generated on the conversion host (Linux, Python 3.11).
 Toolchain
   coremltools 9.0 | torch 2.13 | onnx 1.22 | onnxruntime 1.27 | onnx2torch | onnxsim 0.6.5
 
-Model under test
-  reference_mbf.onnx  — MobileFaceNet reference (1.20M params, seed=0).
-  NOTE: random-but-fixed weights, used to prove the pipeline end-to-end.
-  Numbers involving trained-weight behaviour (identity discrimination, and the
-  final ONNX-vs-CoreML cosine) must be reproduced on macOS with the production
-  w600k_mbf.onnx. Core ML predict() is unavailable on Linux.
+Model under test  (PRODUCTION weights)
+  models/w600k_mbf.onnx  — InsightFace MobileFaceNet (buffalo_s recognition head)
+  sha256 = 9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f
+  size   = 13,616,099 bytes
+  ONNX   : opset 11 | input "input.1" [N,3,112,112] float -> output "516" [1,512] float
+  License: trained on WebFace600K -> NON-COMMERCIAL research use (see README).
 
 A) Conversion fidelity  (same input, both graphs)
-   ONNX (onnxruntime) vs traced-torch graph fed to coremltools:
+   ONNX (onnxruntime) vs the torch graph coremltools traces & converts:
        cosine = 1.000000   -> PASS (threshold 0.999)
    => the graph coremltools converts is numerically identical to the ONNX model.
-   Final step (run on macOS):
+   Final step (must run on macOS, Core ML predict() is macOS-only):
        python verify.py --onnx models/w600k_mbf.onnx \
                         --mlpackage models/FaceEmbedding_fp32.mlpackage
        expected: ONNX vs Core ML cosine > 0.999
@@ -28,18 +28,29 @@ B) Core ML model spec (models/FaceEmbedding_fp32.mlpackage)
    output               : "embedding"   MultiArray Float32 [1, 512]
    preprocessing        : baked in — y = x/127.5 - 1  (RGB, [-1,1])
 
-C) Size / precision
-   FaceEmbedding_fp32.mlpackage : 4.78 MB
-   FaceEmbedding_fp16.mlpackage : 2.43 MB   (~49% smaller)
-   Accuracy delta fp16 vs fp32: negligible for face embeddings; quantify on
-   macOS by running verify.py --mlpackage against each variant.
+C) Size / precision  (production model)
+   FaceEmbedding_fp32.mlpackage : 13.69 MB
+   FaceEmbedding_fp16.mlpackage :  6.90 MB   (~50% smaller)
+   fp16 weight rounding changes embeddings negligibly for face matching;
+   quantify exactly on macOS: run verify.py --mlpackage against each variant
+   and compare the ONNX-vs-CoreML cosine (both expected > 0.999).
 
-D) Identity discrimination (code-path demo on the untrained reference)
-   Pairwise cosine (L2-normalized); a2 is a noisy copy of a1, b1 is distinct:
-                a1      a2      b1
-        a1   1.000   0.996   0.823
-        a2   0.996   1.000   0.823
-        b1   0.823   0.823   1.000
-   Even untrained, the near-duplicate pair separates from the distinct one.
-   With trained w600k_mbf weights + real aligned crops the same-person vs
-   different-person gap is much larger (same-person typ. >0.5, cross <0.3).
+D) Identity discrimination  (Step 5, second part)  -- RAN, PASS
+   Real detection + 5-point alignment (SCRFD det_500m) + w600k_mbf embedding,
+   via discrimination_test.py. Images: two photos of Obama (same person) and
+   one of Biden (different person).
+
+             obama1    obama2     biden
+     obama1   1.000     0.719    -0.018
+     obama2   0.719     1.000     0.074
+      biden  -0.018     0.074     1.000
+
+   same person (obama1 vs obama2) : 0.719   -> well above threshold
+   different  (obama vs biden)    : -0.018 / 0.074 -> near zero
+   => identities are clearly separable (ArcFace decision threshold ~0.3-0.4).
+   Reproduce:
+       python discrimination_test.py obama1.jpg obama2.jpg biden.jpg
+
+Reproduce the whole run
+   python convert.py --onnx models/w600k_mbf.onnx --precision both
+   python verify.py  --onnx models/w600k_mbf.onnx

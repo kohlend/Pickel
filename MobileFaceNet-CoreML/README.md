@@ -74,16 +74,20 @@ pip install -r requirements.txt
 
 ## 4. Get the production weights
 
-Run on a machine with open network access (e.g. your Mac):
+On any machine, via the InsightFace package:
 
 ```bash
 pip install insightface onnxruntime
 python download_model.py          # -> models/w600k_mbf.onnx  (~13 MB)
 ```
 
-(This session's sandbox blocks GitHub-release / HuggingFace hosts, so the
-production `.mlpackage` is built by you on your Mac — which is also where the
-Core ML numeric verification must run, since `predict()` is macOS-only.)
+The exact file is content-addressed:
+`sha256 = 9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f`,
+13,616,099 bytes, ONNX opset 11, `input.1 [N,3,112,112] → 516 [1,512]`.
+
+(The production model in this repo was already fetched and converted — see
+Results below. The only step that still needs your Mac is the Core ML *numeric*
+verification, since `predict()` is macOS-only.)
 
 ## 5. Convert
 
@@ -104,11 +108,23 @@ python verify.py --onnx models/w600k_mbf.onnx \
                  --mlpackage models/FaceEmbedding_fp32.mlpackage
 #   expected: ONNX vs Core ML cosine > 0.999
 
-# Identity discrimination — needs real aligned 112×112 crops:
-python verify.py --onnx models/w600k_mbf.onnx \
-                 --faces personA_1.png personA_2.png personB_1.png
+# Identity discrimination — real detection + alignment + embedding:
+python discrimination_test.py personA_1.jpg personA_2.jpg personB_1.jpg
 #   expected: same-person cosine >> different-person cosine
 ```
+
+Recorded discrimination run (two photos of Obama = same person, Biden =
+different), production `w600k_mbf`:
+
+|        | obama1 | obama2 | biden |
+|--------|-------:|-------:|------:|
+| obama1 | 1.000  | **0.719** | −0.018 |
+| obama2 | 0.719  | 1.000  | 0.074 |
+| biden  | −0.018 | 0.074  | 1.000 |
+
+Same person **0.719**, different people **≈0** — cleanly separable (ArcFace
+threshold ~0.3–0.4). `verify.py --faces` also exists but uses naive resize;
+prefer `discrimination_test.py` for aligned, production-accurate numbers.
 
 On Linux (no Core ML runtime) `verify.py` without `--mlpackage` falls back to
 comparing ONNX vs the traced-torch graph that coremltools converts — validating
@@ -116,13 +132,12 @@ the exact graph the converter consumes.
 
 ---
 
-## Why a reference model?
+## Offline reference model (bonus)
 
-Because the sandbox can't reach the weights host, the pipeline is proven
-end-to-end with a **reference MobileFaceNet** (`mobilefacenet.py` +
-`make_reference_onnx.py`, deterministic random weights, correct
-`[1,3,112,112]→[1,512]` I/O). Reproduce it and inspect a real `.mlpackage`
-without any download:
+A **reference MobileFaceNet** (`mobilefacenet.py` + `make_reference_onnx.py`,
+deterministic random weights, correct `[1,3,112,112]→[1,512]` I/O) lets anyone
+reproduce and inspect a real `.mlpackage` with zero downloads — useful for CI or
+wiring up Xcode before the production weights are in place:
 
 ```bash
 python make_reference_onnx.py --out models/reference_mbf.onnx --seed 0
@@ -135,16 +150,18 @@ changes. See `verification_report.txt` for the recorded run.
 
 ---
 
-## Results (reference model, this repo)
+## Results (production w600k_mbf, this repo)
 
 | Artifact | Size |
 |----------|------|
-| `FaceEmbedding_fp32.mlpackage` | 4.78 MB |
-| `FaceEmbedding_fp16.mlpackage` | 2.43 MB (~49% smaller) |
+| `FaceEmbedding_fp32.mlpackage` | 13.69 MB |
+| `FaceEmbedding_fp16.mlpackage` | 6.90 MB (~50% smaller) |
 
-Fidelity (ONNX vs traced-torch graph): **cosine = 1.000000** (PASS > 0.999).
-Final ONNX-vs-Core ML cosine and identity-discrimination numbers are produced on
-macOS with the production weights — the commands above generate them.
+Fidelity (ONNX vs the traced-torch graph coremltools converts):
+**cosine = 1.000000** (PASS > 0.999) — the converted graph is numerically
+identical to the original ONNX. The final ONNX-vs-Core ML cosine and the
+identity-discrimination matrix are produced on macOS with the commands in §6.
+Full log: `verification_report.txt`.
 
 ## Files
 
