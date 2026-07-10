@@ -1,4 +1,4 @@
-# Pickex — Face preprocessing
+# Pickex — Face pipeline (Steps A–B)
 
 `FacePreprocessor.swift` turns a photo into the exact **112×112 CVPixelBuffer**
 the MobileFaceNet Core ML model expects, for the step between *"Vision detected
@@ -101,6 +101,47 @@ python Pickex/make_reference_crops.py photo1.jpg photo2.jpg ...
 > host. The reference crops above are generated with the equivalent Python
 > alignment as ground truth; run the Swift pipeline on-device/macOS to produce
 > device-side PNGs and confirm they match these.
+
+---
+
+# Step B — Reference profile from 1–4 user photos
+
+`ReferenceProfileBuilder.swift` turns the user's picked reference photos into
+ONE L2-normalized 512-d embedding (`ReferenceProfile`) that the library scan
+(Step C) matches against. `FaceEmbedder.swift` is the extracted single-image
+→ embedding unit (preprocess → Core ML → `[Float]`), reused by Step C.
+
+Key decisions (documented in code):
+
+- **Aggregation**: normalize-each → mean → normalize, behind the
+  `EmbeddingAggregator` protocol so a "keep the set, best-match at query time"
+  strategy can be swapped in without touching callers.
+- **Consistency threshold `0.4`** (`defaultConsistencyThreshold`): from the
+  measured data below — same-person pairs bottom out at ~0.63, impostor pairs
+  top out at ~0.06 — a soft warning, never a hard failure.
+- **Skips are visible**: photos without a detectable face land in
+  `ReferenceProfile.skipped` with a reason for the UI; only if *all* photos
+  fail does `build` throw `.noFaceInAnyPhoto`.
+- **Parallel**: the 1–4 photos are embedded concurrently via `TaskGroup`.
+- The PHPicker layer (`ReferenceProfileBuilder+PHPicker.swift`) is a thin
+  wrapper over the testable `build(from: [ReferenceImage])` core.
+
+## Step-B verification (real LFW photos, production model)
+
+Mirror harness: `verify_reference_profile.py` (same aggregation, same threshold).
+
+**Scenario 1 — 4 photos, same person (G. W. Bush):** all 4 used, pairwise
+cosine **0.627–0.758**, no warning. ✅
+
+**Scenario 2 — photo 3 swapped for a different person (C. Powell):** warning
+fires; exactly the three Powell pairs are flagged (0.034 / 0.051 / 0.058 —
+all far below 0.4), Bush pairs stay 0.658–0.746. The flagged indices single
+out the odd photo for the UI. ✅
+
+**Scenario 3 — photo 3 is a landscape (no face):** skipped as
+`(index 3, noFaceDetected)`, profile built from the remaining 3, no warning. ✅
+
+Final embedding in every scenario: dim 512, L2-norm 1.000.
 
 ## Assumptions (where the model doc left room)
 
