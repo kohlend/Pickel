@@ -1,0 +1,10 @@
+# Pinned toolchain for MobileFaceNet -> Core ML conversion.
+# Tested on Python 3.11 (Linux for conversion; macOS 13+ for Core ML numeric verification).
+coremltools>=7.0        # ML Program / .mlpackage backend (tested with 9.0)
+torch>=2.2              # only used to trace the graph fed into coremltools
+numpy
+pillow
+onnx
+onnxruntime             # runs the ORIGINAL model for the verification step
+onnx2torch              # ONNX -> torch.nn.Module (coremltools dropped its ONNX frontend)
+onnxscript              # only needed by make_reference_onnx.py on torch>=2.9

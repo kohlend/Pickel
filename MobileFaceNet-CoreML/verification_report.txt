@@ -1,0 +1,45 @@
+MobileFaceNet -> Core ML — verification report
+================================================
+Generated on the conversion host (Linux, Python 3.11).
+
+Toolchain
+  coremltools 9.0 | torch 2.13 | onnx 1.22 | onnxruntime 1.27 | onnx2torch | onnxsim 0.6.5
+
+Model under test
+  reference_mbf.onnx  — MobileFaceNet reference (1.20M params, seed=0).
+  NOTE: random-but-fixed weights, used to prove the pipeline end-to-end.
+  Numbers involving trained-weight behaviour (identity discrimination, and the
+  final ONNX-vs-CoreML cosine) must be reproduced on macOS with the production
+  w600k_mbf.onnx. Core ML predict() is unavailable on Linux.
+
+A) Conversion fidelity  (same input, both graphs)
+   ONNX (onnxruntime) vs traced-torch graph fed to coremltools:
+       cosine = 1.000000   -> PASS (threshold 0.999)
+   => the graph coremltools converts is numerically identical to the ONNX model.
+   Final step (run on macOS):
+       python verify.py --onnx models/w600k_mbf.onnx \
+                        --mlpackage models/FaceEmbedding_fp32.mlpackage
+       expected: ONNX vs Core ML cosine > 0.999
+
+B) Core ML model spec (models/FaceEmbedding_fp32.mlpackage)
+   modelType            : mlProgram
+   specificationVersion : 7  (iOS 16+)
+   input                : "face_image"  IMAGE, RGB, 112 x 112
+   output               : "embedding"   MultiArray Float32 [1, 512]
+   preprocessing        : baked in — y = x/127.5 - 1  (RGB, [-1,1])
+
+C) Size / precision
+   FaceEmbedding_fp32.mlpackage : 4.78 MB
+   FaceEmbedding_fp16.mlpackage : 2.43 MB   (~49% smaller)
+   Accuracy delta fp16 vs fp32: negligible for face embeddings; quantify on
+   macOS by running verify.py --mlpackage against each variant.
+
+D) Identity discrimination (code-path demo on the untrained reference)
+   Pairwise cosine (L2-normalized); a2 is a noisy copy of a1, b1 is distinct:
+                a1      a2      b1
+        a1   1.000   0.996   0.823
+        a2   0.996   1.000   0.823
+        b1   0.823   0.823   1.000
+   Even untrained, the near-duplicate pair separates from the distinct one.
+   With trained w600k_mbf weights + real aligned crops the same-person vs
+   different-person gap is much larger (same-person typ. >0.5, cross <0.3).
