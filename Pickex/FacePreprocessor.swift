@@ -34,6 +34,7 @@
 import CoreImage
 import CoreVideo
 import CoreGraphics
+import ImageIO
 import Vision
 
 // MARK: - Errors & configuration
