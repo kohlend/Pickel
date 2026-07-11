@@ -118,7 +118,7 @@ struct PickexDemoView: View {
             status = notes.joined(separator: " ")
 
             // 4. Photo-library permission.
-            let auth = await PHPhotoLibrary.requestAuthorization(for: .readOnly)
+            let auth = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
             guard auth == .authorized || auth == .limited else {
                 status = "Kein Foto-Zugriff erlaubt."; return
             }
