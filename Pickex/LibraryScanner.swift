@@ -272,7 +272,12 @@ public final class LibraryScanner: @unchecked Sendable {
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [item.id],
                                                   options: nil).firstObject else { return }
             let (cgImage, inCloud) = requestCGImage(for: asset, config: config)
-            guard let cgImage else { notLocal = inCloud; return }
+            guard let cgImage else {
+                // Cloud-only -> count as skipped; any other load failure is
+                // transient and must not be cached as "0 faces".
+                if inCloud { notLocal = true } else { computeFailed = true }
+                return
+            }
             do {
                 embeddings = try embedder.embeddingsForAllFaces(
                     in: cgImage, maxFaces: config.maxFacesPerPhoto)
@@ -305,24 +310,35 @@ public final class LibraryScanner: @unchecked Sendable {
     }
 
     /// Downscaled decode via PHImageManager. Returns (image, isCloudOnly).
-    /// `.fastFormat` + `.fast`: Photos may serve an existing thumbnail —
-    /// exactly what a mass scan wants.
+    /// `.fastFormat` first (Photos may serve an existing thumbnail — exactly
+    /// what a mass scan wants); assets without thumbnail resources fail that
+    /// with PHPhotosError 3303 "No resource found matching image request
+    /// spec" (e.g. photos imported into the simulator), so fall back to
+    /// `.highQualityFormat` before giving up.
     private static func requestCGImage(for asset: PHAsset,
                                        config: LibraryScannerConfig) -> (CGImage?, Bool) {
-        let options = PHImageRequestOptions()
-        options.isSynchronous = true            // we're already in a worker task
-        options.deliveryMode = .fastFormat
-        options.resizeMode = .fast
-        options.isNetworkAccessAllowed = config.allowNetworkAccess
+        func request(_ mode: PHImageRequestOptions.DeliveryMode) -> (CGImage?, Bool) {
+            let options = PHImageRequestOptions()
+            options.isSynchronous = true        // we're already in a worker task
+            options.deliveryMode = mode
+            options.resizeMode = .fast
+            options.isNetworkAccessAllowed = config.allowNetworkAccess
 
-        var image: CGImage?
-        var inCloud = false
-        PHImageManager.default().requestImage(for: asset,
-                                              targetSize: config.targetSize,
-                                              contentMode: .aspectFit,
-                                              options: options) { ui, info in
-            image = ui?.cgImage
-            inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+            var image: CGImage?
+            var inCloud = false
+            PHImageManager.default().requestImage(for: asset,
+                                                  targetSize: config.targetSize,
+                                                  contentMode: .aspectFit,
+                                                  options: options) { ui, info in
+                image = ui?.cgImage
+                inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+            }
+            return (image, inCloud)
+        }
+
+        var (image, inCloud) = request(.fastFormat)
+        if image == nil && !inCloud {
+            (image, inCloud) = request(.highQualityFormat)
         }
         return (image, image == nil && inCloud)
     }
