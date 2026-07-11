@@ -147,38 +147,55 @@ Final embedding in every scenario: dim 512, L2-norm 1.000.
 
 # Step C — Library scan against the reference profile
 
-`LibraryScanner.swift` walks the photo library (PHAsset), embeds **every face**
-in each photo (largest first, capped at `maxFacesPerPhoto = 8`) and reports a
-match when ANY face's cosine vs `ReferenceProfile.embedding` reaches
-`matchThreshold`. All faces are checked because on group photos the target
-person is usually not the largest face. `FacePreprocessor.makeAllFaceInputs` /
-`FaceEmbedder.embeddingsForAllFaces` are the additive APIs behind this
-(existing single-face APIs unchanged).
+`LibraryScanner.swift` + `ScanCache.swift`: scan the whole library (10k+
+photos) against the `ReferenceProfile`, stream matches + throttled progress,
+support cancellation, and never recompute photos already in the cache.
 
-- **Match threshold `0.40`** (`LibraryScanner.defaultMatchThreshold`),
-  measured (below): positives 0.651–0.779, negatives ≤ 0.078 — mid-gap,
-  configurable via `LibraryScannerConfig`.
-- **Streaming**: `scanLibrary(against:)` returns an
-  `AsyncThrowingStream<ScanEvent, Error>` with `.progress` after every asset
-  and `.match` as they're found; cancel by ending the for-await loop.
-- **Performance**: decode at 1024 px via `PHImageManager` (synchronous inside
-  worker tasks, no UIKit), bounded TaskGroup (`concurrentPhotos = 4`),
-  iCloud originals allowed.
-- "No face" photos are silently skipped — the normal case.
+**Public API**
 
 ```swift
-let scanner = LibraryScanner(embedder: embedder)
-for try await event in scanner.scanLibrary(against: profile) {
+let scanner = LibraryScanner(embedder: embedder, cache: try ScanCache())
+
+// Streaming (primary): matches appear in the UI as they're found.
+for try await event in scanner.scanEvents(against: profile) {
     switch event {
-    case .progress(let done, let total): // update progress bar
-    case .match(let m): // PHAsset.fetchAssets(withLocalIdentifiers: [m.assetLocalIdentifier], ...)
+    case .progress(let p):  // p.fraction, p.matchCount, p.skippedNotLocal, p.servedFromCache
+    case .match(let m):     // m.assetLocalIdentifier, m.similarity
     }
 }
+
+// Collect-style convenience:
+let matches = try await scanner.scan(reference: profile) { progress in ... }
+
+// New reference person, existing cache -> instant, no photo access:
+let quick = scanner.rematchFromCache(against: newProfile)
 ```
+
+**Design decisions** (rationale in the file headers):
+
+| Decision | Value | Why |
+|---|---|---|
+| Scope | `fetchAssets(with: .image)` | videos excluded by the fetch; Live Photos scanned via their still frame |
+| iCloud | network **OFF** by default | no surprise cellular download of thousands of originals; skipped assets counted in `skippedNotLocal` for the UI ("X photos not on this device"); opt-in flag for Wi-Fi deep scans |
+| Decode | 640 px, `.fastFormat`, `.fast` | plenty for detection + 112 px crop; Photos can serve existing thumbnails |
+| Concurrency | bounded TaskGroup, 4 in flight | this IS the memory cap (~4 decoded images at once) + `autoreleasepool` per photo; Vision/Core ML saturate below 4-way anyway |
+| Matching | every face, max 8, best score wins | target person is rarely the largest face on group photos |
+| Threshold | **0.40**, config knob | calibrated below; the task draft's ~0.70 would sit *inside* the measured positive range and drop half the true matches |
+| Progress | every 20 assets + final | no per-asset UI flood |
+| Cancel | end the for-await loop | delivered matches stay; cache keeps all computed work → an aborted scan loses nothing, the next one resumes from cache |
+
+**Cache** (`ScanCache.swift`): built-in SQLite3 (no dependency), WAL.
+`assets(local_id PK, modified_at, face_count, embeddings BLOB)` — raw
+per-face embeddings (`face_count × 512 × Float32`), *including* `face_count=0`
+("scanned, no faces" — most photos, and exactly the rows that make re-scans
+fast). Invalidation: edited photo → `modified_at` mismatch → recomputed;
+deleted photo → `prune(keeping:)` at scan start. Because raw embeddings (not
+match results) are stored, a **new** reference profile re-matches from cache
+in milliseconds (`rematchFromCache`). Size ≈ 2 KB/photo → ~25 MB at 10k photos.
 
 ## Step-C verification (real 19-photo LFW library, production model)
 
-Harness: `verify_library_scan.py` (mirrors all-faces + any-match logic).
+**Matching accuracy** (`verify_library_scan.py` — all-faces + any-match).
 Library: 8 Bush photos (disjoint from the 4 reference photos), 10 other
 identities, 1 six-face group photo without Bush.
 
@@ -191,6 +208,38 @@ identities, 1 six-face group photo without Bush.
 **Recall 8/8, false positives 0/11 at threshold 0.40** (in fact anywhere in
 0.30–0.50 — the gap is +0.57). Real libraries will be harder (profile views,
 occlusion, aging); the threshold is a config knob for exactly that reason.
+
+**Cache semantics** (`verify_scan_cache.py` — identical SQLite schema +
+lookup/invalidate/prune/rematch logic, real photos, real model):
+
+| check | result |
+|---|---|
+| cold scan | 19 model runs, correct 8 matches, baseline |
+| warm scan | 19/19 cache hits, **0 model runs**, identical results, ~2600× faster ✅ |
+| 1 photo "edited" (modified_at bumped) | exactly 1 recompute, 18 hits ✅ |
+| 3 photos "deleted" | `prune` removes exactly 3 rows ✅ |
+| new person, cache only (`rematchFromCache`) | correct match, 0 model runs, 0.3 ms ✅ |
+| rematch at scale | 10,000 cached embeddings in ~21 ms ✅ |
+
+## Performance (Step-C §6) — honest status
+
+**No iOS device is available in this environment (Linux container), so real
+iPhone numbers could not be measured.** What exists instead:
+
+- **Measured here (Linux, x86 CPU, no ANE):** ~53 ms/photo for detect+embed
+  → ~53 s/1000 photos single-threaded. An iPhone's ANE runs the fp16 model
+  several times faster, but PHImageManager decode becomes the bottleneck;
+  a reasonable expectation is **tens of seconds per 1000 photos** on device,
+  dominated by image loading.
+- **`ScanBenchmark.swift`** is included: call `ScanBenchmark.run(scanner:profile:)`
+  on your iPhone (debug button) — it reports wall time, s/1000 photos, cache
+  hits, iCloud skips, and peak memory (phys_footprint). Run twice: cold vs
+  warm shows the cache payoff.
+- **Background suspension:** without a `BGProcessingTask`, iOS suspends the
+  app shortly after backgrounding and the scan pauses (cache makes resume
+  cheap, so nothing is lost). Decision needed for v1: "keep app open while
+  scanning" (simplest) vs. BGProcessingTask continuation — pick after seeing
+  real device numbers from the benchmark.
 
 ## Assumptions (where the model doc left room)
 

@@ -2,26 +2,50 @@
 //  LibraryScanner.swift
 //  Pickex
 //
-//  Step C: scan the photo library against a ReferenceProfile (Step B) and
-//  stream back the assets that show the person.
+//  Step C — the core of the app: scan the ENTIRE photo library (10k+ photos)
+//  against a ReferenceProfile (Step B), collect matches with confidence
+//  scores, report progress, support cancellation, and never recompute photos
+//  that are already in the ScanCache.
 //
-//  Matching: a photo matches when ANY of its faces has
-//  cosine(faceEmbedding, profile.embedding) >= matchThreshold. All faces are
-//  checked (largest first, capped) because on group photos the target person
-//  is usually not the largest face.
-//
-//  Threshold: `defaultMatchThreshold = 0.40`, measured on a real 18-photo
-//  LFW test library against a 4-photo reference profile (production model):
-//  same-person scores 0.651–0.779, other-people scores −0.033–0.078 — a
-//  +0.57 gap, with 8/8 recall and 0/10 false positives anywhere in
-//  0.30…0.50. 0.40 sits mid-gap; expose it in the config and tune on real
-//  libraries (hard poses/occlusion pull positives down toward ~0.4).
-//
-//  Performance: images are decoded at `targetSize` (default 1024 px — plenty
-//  for Vision + a 112×112 crop), a bounded TaskGroup keeps a few photos in
-//  flight (Vision/Core ML saturate quickly; unbounded fan-out just burns
-//  memory), and everything runs off the main thread. Cancellation: cancel the
-//  consuming task / break out of the for-await loop and in-flight work stops.
+//  ── Design decisions (each with the "why") ──────────────────────────────────
+//  • Scope: `PHAsset.fetchAssets(with: .image)` — still images only. Videos
+//    are excluded BY THE FETCH, not silently later. Live Photos are .image
+//    assets; PHImageManager returns their still key frame, which is what we
+//    scan.
+//  • iCloud: `isNetworkAccessAllowed` is OFF by default — a library scan must
+//    never surprise-download thousands of originals over cellular. Assets
+//    whose pixels aren't on device are counted in `ScanProgress.skippedNotLocal`
+//    so the UI can say "X photos couldn't be checked (not on this device)".
+//    Flip `config.allowNetworkAccess` for an opt-in "deep scan on Wi-Fi".
+//  • Decode size 640 px (longest side), `.fastFormat`, `.fast` resize: 640 px
+//    is plenty for Vision face detection + a 112×112 aligned crop, decodes
+//    ~3-4× faster than 1024+, and fastFormat lets Photos hand us an existing
+//    thumbnail instead of decoding the original.
+//  • Concurrency = batching: a bounded TaskGroup keeps exactly
+//    `concurrentPhotos` (default 4) images in flight — that IS the memory
+//    cap (≈4 × ~1.5 MB decoded + model state), unlike loading 50-photo
+//    batches into arrays. Vision/Core ML saturate a phone well below 4-way
+//    parallelism, so more tasks would only burn RAM. Each child task wraps
+//    its work in `autoreleasepool` (PHImageManager returns autoreleased
+//    UIImages).
+//  • Matching: EVERY face in the photo is embedded (largest first, capped at
+//    `maxFacesPerPhoto`) — on group photos the target person is usually not
+//    the largest face. Photo confidence = max cosine over its faces.
+//  • Threshold 0.40 (`defaultMatchThreshold`): calibrated on a real LFW test
+//    library (README §Step-C): positives 0.651–0.779, negatives ≤ 0.078.
+//    (An earlier draft suggested ~0.70 — that would sit INSIDE the measured
+//    positive range and drop half the true matches.) Config knob for tuning.
+//  • Progress is throttled: `.progress` every `progressGranularity` assets
+//    (default 20) plus a final one — not per asset (UI-update flood).
+//  • Cancellation: end the `for try await` loop (or cancel the consuming
+//    Task). Matches already delivered stay with the caller, and everything
+//    computed so far is already in the ScanCache — an aborted scan loses no
+//    work; the next scan resumes from cache.
+//  • Cache: raw per-face embeddings per localIdentifier+modificationDate
+//    (see ScanCache.swift), INCLUDING "0 faces" results — most photos have no
+//    faces, and skipping them on re-scan is where the speedup comes from.
+//    `rematchFromCache(against:)` matches a NEW reference profile against all
+//    cached embeddings without touching the library at all.
 //
 
 import Photos
@@ -29,31 +53,46 @@ import CoreGraphics
 import ImageIO
 import Foundation
 
-// MARK: - Results & configuration
+// MARK: - Public types
 
-public struct ScanMatch: Sendable {
+public struct ScanProgress: Sendable {
+    public let processed: Int
+    public let total: Int
+    public let matchCount: Int
+    /// iCloud-only assets skipped because network access is disabled.
+    public let skippedNotLocal: Int
+    /// How many processed assets were answered from the ScanCache.
+    public let servedFromCache: Int
+    public var fraction: Double { total > 0 ? Double(processed) / Double(total) : 1 }
+}
+
+public struct MatchResult: Sendable, Codable {
     public let assetLocalIdentifier: String
-    /// Best face score in the photo (cosine vs the reference embedding).
+    /// Best cosine similarity over all faces in the photo.
     public let similarity: Float
-    /// Faces checked in this photo (context for the UI).
-    public let faceCount: Int
+    public let matchedAt: Date
 }
 
 public enum ScanEvent: Sendable {
-    /// Emitted after every processed asset (drives a progress bar).
-    case progress(processed: Int, total: Int)
-    case match(ScanMatch)
+    /// Throttled (every `progressGranularity` assets, and once at the end).
+    case progress(ScanProgress)
+    /// Emitted immediately when an asset matches.
+    case match(MatchResult)
 }
 
 public struct LibraryScannerConfig {
-    /// Cosine threshold for "this face is the person" — see header note.
+    /// Cosine threshold for "this face is the person" — calibrated, see header.
     public var matchThreshold: Float = LibraryScanner.defaultMatchThreshold
     /// Decode size for library photos (longest side, pixels).
-    public var targetSize = CGSize(width: 1024, height: 1024)
-    /// Max faces checked per photo (largest first).
+    public var targetSize = CGSize(width: 640, height: 640)
+    /// Max faces embedded per photo (largest first).
     public var maxFacesPerPhoto: Int = 8
-    /// Photos processed concurrently.
+    /// Photos in flight at once — this bounds peak memory.
     public var concurrentPhotos: Int = 4
+    /// Allow downloading iCloud-only originals. OFF by default (see header).
+    public var allowNetworkAccess: Bool = false
+    /// Emit `.progress` every N processed assets.
+    public var progressGranularity: Int = 20
     public init() {}
 }
 
@@ -64,116 +103,219 @@ public final class LibraryScanner: @unchecked Sendable {
     public static let defaultMatchThreshold: Float = 0.40
 
     private let embedder: FaceEmbedder
+    private let cache: ScanCache?
     private let config: LibraryScannerConfig
 
-    public init(embedder: FaceEmbedder, config: LibraryScannerConfig = LibraryScannerConfig()) {
+    /// `cache: nil` disables persistence (every scan recomputes everything).
+    public init(embedder: FaceEmbedder,
+                cache: ScanCache?,
+                config: LibraryScannerConfig = LibraryScannerConfig()) {
         self.embedder = embedder
+        self.cache = cache
         self.config = config
     }
 
-    /// Scan all image assets in the user's library against the profile.
-    /// Consume with `for try await event in scanner.scanLibrary(against: profile)`.
-    public func scanLibrary(against profile: ReferenceProfile,
-                            fetchOptions: PHFetchOptions? = nil) -> AsyncThrowingStream<ScanEvent, Error> {
+    // MARK: Primary API — streaming
+
+    /// Scan every image in the library. Consume with
+    /// `for try await event in scanner.scanEvents(against: profile) { … }`.
+    public func scanEvents(against profile: ReferenceProfile,
+                           fetchOptions: PHFetchOptions? = nil) -> AsyncThrowingStream<ScanEvent, Error> {
         let options = fetchOptions ?? {
             let o = PHFetchOptions()
             o.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             return o
         }()
+        // .image excludes videos by construction; Live Photos are images here.
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         return scan(assets: assets, against: profile)
     }
 
-    /// Scan an explicit fetch result (album, date range, …).
+    /// Convenience with the collect-style signature: runs the stream to
+    /// completion, forwards throttled progress, returns matches sorted by
+    /// similarity (best first).
+    public func scan(reference: ReferenceProfile,
+                     progress: @escaping @Sendable (ScanProgress) -> Void) async throws -> [MatchResult] {
+        var matches: [MatchResult] = []
+        for try await event in scanEvents(against: reference) {
+            switch event {
+            case .progress(let p): progress(p)
+            case .match(let m): matches.append(m)
+            }
+        }
+        return matches.sorted { $0.similarity > $1.similarity }
+    }
+
+    /// Match a NEW reference profile purely against cached embeddings —
+    /// milliseconds instead of a full scan. Only covers photos that are in
+    /// the cache; run a normal scan afterwards to pick up new photos.
+    public func rematchFromCache(against profile: ReferenceProfile) -> [MatchResult] {
+        guard let cache else { return [] }
+        let reference = l2Normalize(profile.embedding)
+        var results: [MatchResult] = []
+        cache.forEachEntry { id, embeddings in
+            var best: Float = -1
+            for e in embeddings { best = max(best, dot(l2Normalize(e), reference)) }
+            if best >= config.matchThreshold {
+                results.append(MatchResult(assetLocalIdentifier: id,
+                                           similarity: best, matchedAt: Date()))
+            }
+        }
+        return results.sorted { $0.similarity > $1.similarity }
+    }
+
+    // MARK: Core scan
+
     public func scan(assets: PHFetchResult<PHAsset>,
                      against profile: ReferenceProfile) -> AsyncThrowingStream<ScanEvent, Error> {
         let reference = l2Normalize(profile.embedding)
         let total = assets.count
-        let identifiers: [String] = (0..<total).map { assets.object(at: $0).localIdentifier }
+        // Snapshot (id, modificationDate) up front — cheap metadata, avoids
+        // holding PHAssets across tasks.
+        var snapshot: [(id: String, modified: Date?)] = []
+        snapshot.reserveCapacity(total)
+        assets.enumerateObjects { asset, _, _ in
+            snapshot.append((asset.localIdentifier, asset.modificationDate))
+        }
 
         return AsyncThrowingStream { continuation in
-            let worker = Task { [config, embedder] in
-                var processed = 0
-                var iterator = identifiers.makeIterator()
+            let worker = Task { [config, embedder, cache] in
+                // Drop cache rows for photos that no longer exist.
+                cache?.prune(keeping: Set(snapshot.map(\.id)))
 
-                try await withThrowingTaskGroup(of: ScanMatch?.self) { group in
-                    var inFlight = 0
+                var processed = 0, matchCount = 0, notLocal = 0, fromCache = 0
+                var iterator = snapshot.makeIterator()
 
-                    func addNext() -> Bool {
-                        guard let id = iterator.next() else { return false }
-                        group.addTask {
-                            try Task.checkCancellation()
-                            return Self.process(assetIdentifier: id,
-                                                reference: reference,
-                                                embedder: embedder,
-                                                config: config)
-                        }
-                        inFlight += 1
-                        return true
-                    }
-
-                    // Prime a bounded window, then keep it full.
-                    while inFlight < max(1, config.concurrentPhotos), addNext() {}
-                    while inFlight > 0 {
-                        let match = try await group.next()!
-                        inFlight -= 1
-                        processed += 1
-                        if let match { continuation.yield(.match(match)) }
-                        continuation.yield(.progress(processed: processed, total: total))
-                        _ = addNext()
-                    }
+                func emitProgress(force: Bool = false) {
+                    guard force || processed % max(1, config.progressGranularity) == 0 else { return }
+                    continuation.yield(.progress(ScanProgress(
+                        processed: processed, total: total,
+                        matchCount: matchCount,
+                        skippedNotLocal: notLocal,
+                        servedFromCache: fromCache)))
                 }
-                continuation.finish()
+
+                do {
+                    try await withThrowingTaskGroup(of: AssetOutcome.self) { group in
+                        var inFlight = 0
+
+                        func addNext() -> Bool {
+                            guard let item = iterator.next() else { return false }
+                            group.addTask {
+                                try Task.checkCancellation()
+                                return Self.process(item: item, reference: reference,
+                                                    embedder: embedder, cache: cache,
+                                                    config: config)
+                            }
+                            inFlight += 1
+                            return true
+                        }
+
+                        // Bounded window: exactly `concurrentPhotos` in flight.
+                        while inFlight < max(1, config.concurrentPhotos), addNext() {}
+                        while inFlight > 0 {
+                            let outcome = try await group.next()!
+                            inFlight -= 1
+                            processed += 1
+                            switch outcome {
+                            case .match(let m, let cached):
+                                matchCount += 1
+                                if cached { fromCache += 1 }
+                                continuation.yield(.match(m))
+                            case .noMatch(let cached):
+                                if cached { fromCache += 1 }
+                            case .skippedNotLocal:
+                                notLocal += 1
+                            }
+                            emitProgress()
+                            _ = addNext()
+                        }
+                    }
+                    emitProgress(force: true)
+                    continuation.finish()
+                } catch {
+                    // Cancellation or a hard failure: matches already yielded
+                    // stay with the caller; cache already holds computed work.
+                    emitProgress(force: true)
+                    continuation.finish(throwing: error is CancellationError ? nil : error)
+                }
             }
             continuation.onTermination = { _ in worker.cancel() }
         }
     }
 
-    // MARK: per-asset work (synchronous, runs inside a task-group child)
+    // MARK: per-asset work (inside a task-group child, off-main)
 
-    private static func process(assetIdentifier: String,
-                                reference: [Float],
-                                embedder: FaceEmbedder,
-                                config: LibraryScannerConfig) -> ScanMatch? {
-        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetIdentifier],
-                                              options: nil).firstObject,
-              let cgImage = requestCGImage(for: asset, targetSize: config.targetSize) else {
-            return nil   // unloadable asset -> skip silently
-        }
-
-        let embeddings: [[Float]]
-        do {
-            embeddings = try embedder.embeddingsForAllFaces(in: cgImage,
-                                                            maxFaces: config.maxFacesPerPhoto)
-        } catch {
-            return nil   // no face (normal) or per-photo failure -> no match
-        }
-
-        var best: Float = -1
-        for vector in embeddings {
-            best = max(best, dot(l2Normalize(vector), reference))
-        }
-        guard best >= config.matchThreshold else { return nil }
-        return ScanMatch(assetLocalIdentifier: assetIdentifier,
-                         similarity: best,
-                         faceCount: embeddings.count)
+    private enum AssetOutcome: Sendable {
+        case match(MatchResult, fromCache: Bool)
+        case noMatch(fromCache: Bool)
+        case skippedNotLocal
     }
 
-    /// Synchronous, downscaled decode via PHImageManager (hot path: no UIKit).
-    private static func requestCGImage(for asset: PHAsset, targetSize: CGSize) -> CGImage? {
-        let options = PHImageRequestOptions()
-        options.isSynchronous = true            // we're already off-main in a child task
-        options.deliveryMode = .highQualityFormat
-        options.resizeMode = .fast
-        options.isNetworkAccessAllowed = true   // iCloud originals
-
-        var result: CGImage?
-        PHImageManager.default().requestImage(for: asset,
-                                              targetSize: targetSize,
-                                              contentMode: .aspectFit,
-                                              options: options) { image, _ in
-            result = image?.cgImage
+    private static func process(item: (id: String, modified: Date?),
+                                reference: [Float],
+                                embedder: FaceEmbedder,
+                                cache: ScanCache?,
+                                config: LibraryScannerConfig) -> AssetOutcome {
+        // 1. Cache fast path — including cached "no faces" results.
+        if let cached = cache?.lookup(localIdentifier: item.id, modificationDate: item.modified) {
+            return outcome(for: cached, reference: reference,
+                           id: item.id, threshold: config.matchThreshold, fromCache: true)
         }
-        return result
+
+        // 2. Load a downscaled decode; detect iCloud-only assets.
+        var embeddings: [[Float]] = []
+        var notLocal = false
+        autoreleasepool {
+            guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [item.id],
+                                                  options: nil).firstObject else { return }
+            let (cgImage, inCloud) = requestCGImage(for: asset, config: config)
+            guard let cgImage else { notLocal = inCloud; return }
+            // noFaceFound -> empty list (cached below); other per-photo errors
+            // also yield [] — treated as "nothing matchable in this photo".
+            embeddings = (try? embedder.embeddingsForAllFaces(
+                in: cgImage, maxFaces: config.maxFacesPerPhoto)) ?? []
+        }
+        if notLocal { return .skippedNotLocal }
+
+        // 3. Persist raw embeddings (also the empty "no faces" result).
+        cache?.store(localIdentifier: item.id, modificationDate: item.modified,
+                     embeddings: embeddings)
+
+        return outcome(for: embeddings, reference: reference,
+                       id: item.id, threshold: config.matchThreshold, fromCache: false)
+    }
+
+    private static func outcome(for embeddings: [[Float]], reference: [Float],
+                                id: String, threshold: Float, fromCache: Bool) -> AssetOutcome {
+        var best: Float = -1
+        for e in embeddings { best = max(best, dot(l2Normalize(e), reference)) }
+        guard best >= threshold else { return .noMatch(fromCache: fromCache) }
+        return .match(MatchResult(assetLocalIdentifier: id,
+                                  similarity: best, matchedAt: Date()),
+                      fromCache: fromCache)
+    }
+
+    /// Downscaled decode via PHImageManager. Returns (image, isCloudOnly).
+    /// `.fastFormat` + `.fast`: Photos may serve an existing thumbnail —
+    /// exactly what a mass scan wants.
+    private static func requestCGImage(for asset: PHAsset,
+                                       config: LibraryScannerConfig) -> (CGImage?, Bool) {
+        let options = PHImageRequestOptions()
+        options.isSynchronous = true            // we're already in a worker task
+        options.deliveryMode = .fastFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = config.allowNetworkAccess
+
+        var image: CGImage?
+        var inCloud = false
+        PHImageManager.default().requestImage(for: asset,
+                                              targetSize: config.targetSize,
+                                              contentMode: .aspectFit,
+                                              options: options) { ui, info in
+            image = ui?.cgImage
+            inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+        }
+        return (image, image == nil && inCloud)
     }
 }
