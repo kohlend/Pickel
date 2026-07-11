@@ -135,8 +135,14 @@ struct PickexDemoView: View {
                 }
             }
             status = "Fertig: \(matches.count) Treffer."
-        } catch ReferenceProfileError.noFaceInAnyPhoto {
-            status = "Kein Gesicht erkannt — bitte andere Referenzfotos wählen."
+        } catch ReferenceProfileError.noFaceInAnyPhoto(let skipped) {
+            let details = skipped.map { s -> String in
+                switch s.reason {
+                case .noFaceDetected: return "Foto \(s.index + 1): kein Gesicht erkannt"
+                case .processingError(let e): return "Foto \(s.index + 1): FEHLER: \(e)"
+                }
+            }.joined(separator: "\n")
+            status = "Kein Profil möglich:\n\(details)"
         } catch is CancellationError {
             status = "Abgebrochen — \(matches.count) Treffer behalten, Cache bleibt."
         } catch {

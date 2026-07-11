@@ -58,7 +58,9 @@ public struct ConsistencyWarning {
 public enum ReferenceProfileError: Error, Equatable {
     case noPhotosProvided
     /// No face in ANY photo -> UI: "Kein Gesicht erkannt, bitte andere Fotos wählen".
-    case noFaceInAnyPhoto
+    /// Carries the per-photo skip reasons so the UI can show WHY (a photo with
+    /// no detectable face vs. a processing/model error look identical otherwise).
+    case noFaceInAnyPhoto(skipped: [SkippedPhoto])
 }
 
 /// One reference photo, decoupled from PhotosUI so the builder is unit-testable.
@@ -164,7 +166,9 @@ public final class ReferenceProfileBuilder {
         multipleFaceWarnings.sort()
 
         // 3. Complete failure: not a single face anywhere.
-        guard !used.isEmpty else { throw ReferenceProfileError.noFaceInAnyPhoto }
+        guard !used.isEmpty else {
+            throw ReferenceProfileError.noFaceInAnyPhoto(skipped: skipped)
+        }
 
         // 4. Consistency check (soft warning) across the valid embeddings.
         let warning = consistencyWarning(for: used)
