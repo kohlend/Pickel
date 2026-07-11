@@ -140,8 +140,8 @@ public final class FaceEmbedder: @unchecked Sendable {
         case .double:
             let ptr = array.dataPointer.bindMemory(to: Double.self, capacity: count)
             for i in 0..<count { out[i] = Float(ptr[i]) }
-        case .float16:
-            // No direct Float16 pointer read across all SDKs — go via NSNumber.
+        case .float16, .int32:
+            // No direct pointer read for these across all SDKs — go via NSNumber.
             for i in 0..<count { out[i] = array[i].floatValue }
         @unknown default:
             for i in 0..<count { out[i] = array[i].floatValue }

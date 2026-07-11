@@ -52,6 +52,7 @@ import Photos
 import CoreGraphics
 import ImageIO
 import Foundation
+import UIKit
 
 // MARK: - Public types
 
