@@ -323,7 +323,7 @@ public final class LibraryScanner: @unchecked Sendable {
     /// `.highQualityFormat` before giving up.
     private static func requestCGImage(for asset: PHAsset,
                                        config: LibraryScannerConfig) -> (CGImage?, Bool) {
-        func request(_ mode: PHImageRequestOptions.DeliveryMode) -> (CGImage?, Bool) {
+        func request(_ mode: PHImageRequestOptionsDeliveryMode) -> (CGImage?, Bool) {
             let options = PHImageRequestOptions()
             options.isSynchronous = true        // we're already in a worker task
             options.deliveryMode = mode
