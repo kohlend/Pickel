@@ -87,6 +87,20 @@ public final class FaceEmbedder: @unchecked Sendable {
         try runModel(on: buffer)
     }
 
+    /// Embed EVERY face in the photo (largest first, capped at `maxFaces`).
+    /// The library scan uses this: on group photos the person we're looking
+    /// for is often not the largest face. Throws `.noFaceFound` when the photo
+    /// has no faces (the normal case for most library photos).
+    public func embeddingsForAllFaces(in cgImage: CGImage,
+                                      orientation: CGImagePropertyOrientation = .up,
+                                      maxFaces: Int = 8) throws -> [[Float]] {
+        let crops = try preprocessor.makeAllFaceInputs(from: cgImage,
+                                                       orientation: orientation,
+                                                       maxFaces: maxFaces)
+        // A face whose model run fails is dropped, not fatal for the photo.
+        return crops.compactMap { try? runModel(on: $0.pixelBuffer) }
+    }
+
     // MARK: model plumbing
 
     private func runModel(on buffer: CVPixelBuffer) throws -> [Float] {

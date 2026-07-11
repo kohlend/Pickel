@@ -1,4 +1,4 @@
-# Pickex — Face pipeline (Steps A–B)
+# Pickex — Face pipeline (Steps A–C)
 
 `FacePreprocessor.swift` turns a photo into the exact **112×112 CVPixelBuffer**
 the MobileFaceNet Core ML model expects, for the step between *"Vision detected
@@ -142,6 +142,55 @@ out the odd photo for the UI. ✅
 `(index 3, noFaceDetected)`, profile built from the remaining 3, no warning. ✅
 
 Final embedding in every scenario: dim 512, L2-norm 1.000.
+
+---
+
+# Step C — Library scan against the reference profile
+
+`LibraryScanner.swift` walks the photo library (PHAsset), embeds **every face**
+in each photo (largest first, capped at `maxFacesPerPhoto = 8`) and reports a
+match when ANY face's cosine vs `ReferenceProfile.embedding` reaches
+`matchThreshold`. All faces are checked because on group photos the target
+person is usually not the largest face. `FacePreprocessor.makeAllFaceInputs` /
+`FaceEmbedder.embeddingsForAllFaces` are the additive APIs behind this
+(existing single-face APIs unchanged).
+
+- **Match threshold `0.40`** (`LibraryScanner.defaultMatchThreshold`),
+  measured (below): positives 0.651–0.779, negatives ≤ 0.078 — mid-gap,
+  configurable via `LibraryScannerConfig`.
+- **Streaming**: `scanLibrary(against:)` returns an
+  `AsyncThrowingStream<ScanEvent, Error>` with `.progress` after every asset
+  and `.match` as they're found; cancel by ending the for-await loop.
+- **Performance**: decode at 1024 px via `PHImageManager` (synchronous inside
+  worker tasks, no UIKit), bounded TaskGroup (`concurrentPhotos = 4`),
+  iCloud originals allowed.
+- "No face" photos are silently skipped — the normal case.
+
+```swift
+let scanner = LibraryScanner(embedder: embedder)
+for try await event in scanner.scanLibrary(against: profile) {
+    switch event {
+    case .progress(let done, let total): // update progress bar
+    case .match(let m): // PHAsset.fetchAssets(withLocalIdentifiers: [m.assetLocalIdentifier], ...)
+    }
+}
+```
+
+## Step-C verification (real 19-photo LFW library, production model)
+
+Harness: `verify_library_scan.py` (mirrors all-faces + any-match logic).
+Library: 8 Bush photos (disjoint from the 4 reference photos), 10 other
+identities, 1 six-face group photo without Bush.
+
+| set | best-face score | result |
+|-----|-----------------|--------|
+| 8 positives (Bush) | 0.651 – 0.779 | all matched ✅ |
+| 10 single-face negatives | −0.033 – 0.078 | none matched ✅ |
+| 6-face group photo (no Bush) | 0.071 | not matched ✅ |
+
+**Recall 8/8, false positives 0/11 at threshold 0.40** (in fact anywhere in
+0.30–0.50 — the gap is +0.57). Real libraries will be harder (profile views,
+occlusion, aging); the threshold is a config knob for exactly that reason.
 
 ## Assumptions (where the model doc left room)
 

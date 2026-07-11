@@ -114,6 +114,44 @@ public final class FacePreprocessor {
     /// (`faceCount`, `alignedWithLandmarks`). Detection runs once.
     public func makeFaceInputDetailed(from cgImage: CGImage,
                                       orientation: CGImagePropertyOrientation = .up) throws -> FaceCropResult {
+        let (image, W, H) = uprightImage(from: cgImage, orientation: orientation)
+        let faces = try detectFaces(in: cgImage, orientation: orientation)
+        let largest = faces.max {
+            $0.boundingBox.width * $0.boundingBox.height <
+            $1.boundingBox.width * $1.boundingBox.height
+        }!
+        let (buffer, aligned) = try alignAndRender(largest, in: image, W: W, H: H)
+        return FaceCropResult(pixelBuffer: buffer, faceCount: faces.count, alignedWithLandmarks: aligned)
+    }
+
+    /// Crop EVERY detected face (largest first, capped at `maxFaces`) — used by
+    /// the library scan, where the person we're looking for is often NOT the
+    /// largest face in a group photo. Faces that can't be aligned or rendered
+    /// are dropped individually rather than failing the whole photo.
+    /// Throws only `.noFaceFound` (the normal no-face-photo case).
+    public func makeAllFaceInputs(from cgImage: CGImage,
+                                  orientation: CGImagePropertyOrientation = .up,
+                                  maxFaces: Int = 8) throws -> [FaceCropResult] {
+        let (image, W, H) = uprightImage(from: cgImage, orientation: orientation)
+        let faces = try detectFaces(in: cgImage, orientation: orientation)
+        let bySize = faces.sorted {
+            $0.boundingBox.width * $0.boundingBox.height >
+            $1.boundingBox.width * $1.boundingBox.height
+        }
+        var results: [FaceCropResult] = []
+        for face in bySize.prefix(max(1, maxFaces)) {
+            guard let (buffer, aligned) = try? alignAndRender(face, in: image, W: W, H: H) else { continue }
+            results.append(FaceCropResult(pixelBuffer: buffer,
+                                          faceCount: faces.count,
+                                          alignedWithLandmarks: aligned))
+        }
+        return results
+    }
+
+    // Shared plumbing for the single-face and all-faces paths.
+
+    private func uprightImage(from cgImage: CGImage,
+                              orientation: CGImagePropertyOrientation) -> (CIImage, CGFloat, CGFloat) {
         // Work entirely in an upright image space so Vision's coordinates and
         // our render coordinates line up. `.oriented` gives an upright CIImage;
         // we normalize its extent origin to (0,0).
@@ -121,24 +159,22 @@ public final class FacePreprocessor {
         let image = orientedRaw.transformed(
             by: CGAffineTransform(translationX: -orientedRaw.extent.origin.x,
                                   y: -orientedRaw.extent.origin.y))
-        let W = image.extent.width
-        let H = image.extent.height
+        return (image, image.extent.width, image.extent.height)
+    }
 
-        let (face, faceCount) = try detectFaces(in: cgImage, orientation: orientation)
-
-        // Prefer 5-point alignment; fall back to bbox+margin.
+    /// Landmark alignment with bbox fallback for one face; returns the buffer
+    /// and whether landmarks were used.
+    private func alignAndRender(_ face: VNFaceObservation,
+                                in image: CIImage, W: CGFloat, H: CGFloat) throws -> (CVPixelBuffer, Bool) {
         if let src = fivePoints(of: face, imageWidth: W, imageHeight: H) {
             let transform = try similarityTransform(from: src, to: templateCI())
-            let buffer = try render(image, transform: transform)
-            return FaceCropResult(pixelBuffer: buffer, faceCount: faceCount, alignedWithLandmarks: true)
+            return (try render(image, transform: transform), true)
         }
-
         guard config.allowBoundingBoxFallback else {
             throw FacePreprocessError.landmarksUnavailable
         }
         let transform = try boundingBoxTransform(box: face.boundingBox, imageWidth: W, imageHeight: H)
-        let buffer = try render(image, transform: transform)
-        return FaceCropResult(pixelBuffer: buffer, faceCount: faceCount, alignedWithLandmarks: false)
+        return (try render(image, transform: transform), false)
     }
 
     public func makeFaceInput(from ciImage: CIImage,
@@ -157,21 +193,16 @@ public final class FacePreprocessor {
 
     // MARK: Step 1 — detection + landmarks
 
-    /// Returns the largest face and the total number of faces detected.
+    /// Runs Vision face+landmark detection; throws `.noFaceFound` when empty.
     private func detectFaces(in cgImage: CGImage,
-                             orientation: CGImagePropertyOrientation) throws -> (largest: VNFaceObservation, count: Int) {
+                             orientation: CGImagePropertyOrientation) throws -> [VNFaceObservation] {
         let request = VNDetectFaceLandmarksRequest()
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         try handler.perform([request])
         guard let faces = request.results, !faces.isEmpty else {
             throw FacePreprocessError.noFaceFound
         }
-        // Largest by bounding-box area (normalized coords compare fine).
-        let largest = faces.max {
-            $0.boundingBox.width * $0.boundingBox.height <
-            $1.boundingBox.width * $1.boundingBox.height
-        }!
-        return (largest, faces.count)
+        return faces
     }
 
     /// Five alignment points in CI coordinates (origin bottom-left, y-up),
