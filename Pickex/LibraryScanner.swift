@@ -64,6 +64,8 @@ public struct ScanProgress: Sendable {
     public let skippedNotLocal: Int
     /// How many processed assets were answered from the ScanCache.
     public let servedFromCache: Int
+    /// Assets that could not be loaded/processed this run (never cached).
+    public let failedToProcess: Int
     public var fraction: Double { total > 0 ? Double(processed) / Double(total) : 1 }
 }
 
@@ -184,7 +186,7 @@ public final class LibraryScanner: @unchecked Sendable {
                 // Drop cache rows for photos that no longer exist.
                 cache?.prune(keeping: Set(snapshot.map(\.id)))
 
-                var processed = 0, matchCount = 0, notLocal = 0, fromCache = 0
+                var processed = 0, matchCount = 0, notLocal = 0, fromCache = 0, failed = 0
                 var iterator = snapshot.makeIterator()
 
                 func emitProgress(force: Bool = false) {
@@ -193,7 +195,8 @@ public final class LibraryScanner: @unchecked Sendable {
                         processed: processed, total: total,
                         matchCount: matchCount,
                         skippedNotLocal: notLocal,
-                        servedFromCache: fromCache)))
+                        servedFromCache: fromCache,
+                        failedToProcess: failed)))
                 }
 
                 do {
@@ -227,6 +230,8 @@ public final class LibraryScanner: @unchecked Sendable {
                                 if cached { fromCache += 1 }
                             case .skippedNotLocal:
                                 notLocal += 1
+                            case .failed:
+                                failed += 1
                             }
                             emitProgress()
                             _ = addNext()
@@ -251,6 +256,7 @@ public final class LibraryScanner: @unchecked Sendable {
         case match(MatchResult, fromCache: Bool)
         case noMatch(fromCache: Bool)
         case skippedNotLocal
+        case failed          // load/processing error this run; never cached
     }
 
     private static func process(item: (id: String, modified: Date?),
@@ -289,7 +295,7 @@ public final class LibraryScanner: @unchecked Sendable {
             }
         }
         if notLocal { return .skippedNotLocal }
-        if computeFailed { return .noMatch(fromCache: false) }
+        if computeFailed { return .failed }
 
         // 3. Persist raw embeddings (also the empty "no faces" result).
         cache?.store(localIdentifier: item.id, modificationDate: item.modified,
@@ -339,6 +345,33 @@ public final class LibraryScanner: @unchecked Sendable {
         var (image, inCloud) = request(.fastFormat)
         if image == nil && !inCloud {
             (image, inCloud) = request(.highQualityFormat)
+        }
+        // Last resort: fetch the ORIGINAL data and downsample it ourselves via
+        // ImageIO. Bypasses the Photos thumbnail pipeline entirely — some
+        // assets (e.g. photos imported into the simulator) fail both request
+        // modes above with PHPhotosError 3303.
+        if image == nil && !inCloud {
+            let dataOptions = PHImageRequestOptions()
+            dataOptions.isSynchronous = true
+            dataOptions.isNetworkAccessAllowed = config.allowNetworkAccess
+            var data: Data?
+            PHImageManager.default().requestImageDataAndOrientation(for: asset,
+                                                                    options: dataOptions) { d, _, _, info in
+                data = d
+                inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+            }
+            if let data,
+               let source = CGImageSourceCreateWithData(data as CFData,
+                                                        [kCGImageSourceShouldCache: false] as CFDictionary) {
+                let side = Int(max(config.targetSize.width, config.targetSize.height))
+                let thumbOptions: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,   // applies EXIF orientation
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceThumbnailMaxPixelSize: side,
+                ]
+                image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary)
+            }
         }
         return (image, image == nil && inCloud)
     }

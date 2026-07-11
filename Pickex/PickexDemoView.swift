@@ -53,7 +53,8 @@ struct PickexDemoView: View {
                     ProgressView(value: p.fraction) {
                         Text("\(p.processed)/\(p.total) · \(p.matchCount) Treffer"
                              + (p.skippedNotLocal > 0 ? " · \(p.skippedNotLocal) nicht lokal" : "")
-                             + (p.servedFromCache > 0 ? " · \(p.servedFromCache) aus Cache" : ""))
+                             + (p.servedFromCache > 0 ? " · \(p.servedFromCache) aus Cache" : "")
+                             + (p.failedToProcess > 0 ? " · ⚠️ \(p.failedToProcess) fehlgeschlagen" : ""))
                         .font(.caption)
                     }
                 }
