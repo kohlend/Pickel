@@ -200,6 +200,18 @@ public final class ScanCache: @unchecked Sendable {
         for (id, embs) in rows { body(id, embs) }
     }
 
+    /// Drop every cached row — e.g. to recover from results produced by a
+    /// buggy/broken run, or as a debug reset. The next scan recomputes all.
+    public func clear() {
+        queue.sync {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, "DELETE FROM assets;", -1, &stmt, nil) == SQLITE_OK {
+                _ = sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+        }
+    }
+
     public var count: Int {
         queue.sync {
             var stmt: OpaquePointer?

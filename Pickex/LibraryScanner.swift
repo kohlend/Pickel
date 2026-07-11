@@ -267,17 +267,24 @@ public final class LibraryScanner: @unchecked Sendable {
         // 2. Load a downscaled decode; detect iCloud-only assets.
         var embeddings: [[Float]] = []
         var notLocal = false
+        var computeFailed = false
         autoreleasepool {
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [item.id],
                                                   options: nil).firstObject else { return }
             let (cgImage, inCloud) = requestCGImage(for: asset, config: config)
             guard let cgImage else { notLocal = inCloud; return }
-            // noFaceFound -> empty list (cached below); other per-photo errors
-            // also yield [] — treated as "nothing matchable in this photo".
-            embeddings = (try? embedder.embeddingsForAllFaces(
-                in: cgImage, maxFaces: config.maxFacesPerPhoto)) ?? []
+            do {
+                embeddings = try embedder.embeddingsForAllFaces(
+                    in: cgImage, maxFaces: config.maxFacesPerPhoto)
+            } catch FacePreprocessError.noFaceFound {
+                embeddings = []          // genuine "no faces" — cacheable result
+            } catch {
+                computeFailed = true     // transient error — must NOT be cached,
+                                         // or a broken run poisons every re-scan
+            }
         }
         if notLocal { return .skippedNotLocal }
+        if computeFailed { return .noMatch(fromCache: false) }
 
         // 3. Persist raw embeddings (also the empty "no faces" result).
         cache?.store(localIdentifier: item.id, modificationDate: item.modified,

@@ -80,6 +80,15 @@ struct PickexDemoView: View {
             }
             .padding()
             .navigationTitle("Pickex Demo")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Cache leeren") {
+                        (try? ScanCache())?.clear()
+                        status = "Scan-Cache geleert — nächster Scan rechnet alles neu."
+                    }
+                    .disabled(scanTask != nil)
+                }
+            }
         }
     }
 
