@@ -198,6 +198,14 @@ public final class FacePreprocessor {
     private func detectFaces(in cgImage: CGImage,
                              orientation: CGImagePropertyOrientation) throws -> [VNFaceObservation] {
         let request = VNDetectFaceLandmarksRequest()
+        #if targetEnvironment(simulator)
+        // The iOS SIMULATOR can fail Vision's NN-based requests with
+        // VNErrorDomain Code=9 "Could not create inference context" when no
+        // GPU inference context is available. Force the CPU path there.
+        // (Deprecated API, but confined to simulator builds; real devices
+        // never take this branch.)
+        request.usesCPUOnly = true
+        #endif
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         try handler.perform([request])
         guard let faces = request.results, !faces.isEmpty else {
