@@ -69,12 +69,7 @@ struct PickexDemoView: View {
 
                 if let p = progress {
                     ProgressView(value: p.fraction) {
-                        Text("\(p.processed)/\(p.total) · \(p.matchCount) Treffer"
-                             + (p.bestSimilarity > -1 ? String(format: " · best %.2f", p.bestSimilarity) : "")
-                             + (p.skippedNotLocal > 0 ? " · \(p.skippedNotLocal) nicht lokal" : "")
-                             + (p.servedFromCache > 0 ? " · \(p.servedFromCache) aus Cache" : "")
-                             + (p.failedToProcess > 0 ? " · ⚠️ \(p.failedToProcess) fehlgeschlagen" : ""))
-                        .font(.caption)
+                        Text(Self.progressLabel(p)).font(.caption)
                     }
                 }
 
@@ -110,6 +105,17 @@ struct PickexDemoView: View {
                 }
             }
         }
+    }
+
+    /// Built in a plain function (not inline in the View) so the SwiftUI
+    /// type-checker doesn't choke on a long `+`/ternary string expression.
+    private static func progressLabel(_ p: ScanProgress) -> String {
+        var parts = ["\(p.processed)/\(p.total)", "\(p.matchCount) Treffer"]
+        if p.bestSimilarity > -1 { parts.append(String(format: "best %.2f", p.bestSimilarity)) }
+        if p.skippedNotLocal > 0 { parts.append("\(p.skippedNotLocal) nicht lokal") }
+        if p.servedFromCache > 0 { parts.append("\(p.servedFromCache) aus Cache") }
+        if p.failedToProcess > 0 { parts.append("⚠️ \(p.failedToProcess) fehlgeschlagen") }
+        return parts.joined(separator: " · ")
     }
 
     // MARK: pipeline
@@ -178,7 +184,14 @@ struct PickexDemoView: View {
             }
 
             // 5. Scan (Step C) — matches appear live.
-            let scanner = LibraryScanner(embedder: embedder, cache: try? ScanCache())
+            // DEBUG: threshold lowered so ALL face-bearing photos surface,
+            // ranked by score. Lets us see whether a photo of the reference
+            // person ranks high (pipeline OK, only library/threshold) or a
+            // known-same photo scores low (scan-path bug). Restore 0.40 later.
+            var scanConfig = LibraryScannerConfig()
+            scanConfig.matchThreshold = 0.05
+            let scanner = LibraryScanner(embedder: embedder, cache: try? ScanCache(),
+                                         config: scanConfig)
             for try await event in scanner.scanEvents(against: profile) {
                 switch event {
                 case .progress(let p): progress = p
