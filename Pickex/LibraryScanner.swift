@@ -66,6 +66,10 @@ public struct ScanProgress: Sendable {
     public let servedFromCache: Int
     /// Assets that could not be loaded/processed this run (never cached).
     public let failedToProcess: Int
+    /// Highest face similarity seen so far — even below the match threshold.
+    /// Makes "0 matches" debuggable: best=0.38 means "close, tune threshold",
+    /// best=0.05 means "pipeline problem".
+    public let bestSimilarity: Float
     public var fraction: Double { total > 0 ? Double(processed) / Double(total) : 1 }
 }
 
@@ -187,6 +191,7 @@ public final class LibraryScanner: @unchecked Sendable {
                 cache?.prune(keeping: Set(snapshot.map(\.id)))
 
                 var processed = 0, matchCount = 0, notLocal = 0, fromCache = 0, failed = 0
+                var best: Float = -1
                 var iterator = snapshot.makeIterator()
 
                 func emitProgress(force: Bool = false) {
@@ -196,7 +201,8 @@ public final class LibraryScanner: @unchecked Sendable {
                         matchCount: matchCount,
                         skippedNotLocal: notLocal,
                         servedFromCache: fromCache,
-                        failedToProcess: failed)))
+                        failedToProcess: failed,
+                        bestSimilarity: best)))
                 }
 
                 do {
@@ -224,9 +230,11 @@ public final class LibraryScanner: @unchecked Sendable {
                             switch outcome {
                             case .match(let m, let cached):
                                 matchCount += 1
+                                best = max(best, m.similarity)
                                 if cached { fromCache += 1 }
                                 continuation.yield(.match(m))
-                            case .noMatch(let cached):
+                            case .noMatch(let cached, let score):
+                                best = max(best, score)
                                 if cached { fromCache += 1 }
                             case .skippedNotLocal:
                                 notLocal += 1
@@ -254,7 +262,7 @@ public final class LibraryScanner: @unchecked Sendable {
 
     private enum AssetOutcome: Sendable {
         case match(MatchResult, fromCache: Bool)
-        case noMatch(fromCache: Bool)
+        case noMatch(fromCache: Bool, bestScore: Float)   // below threshold, score kept for diagnostics
         case skippedNotLocal
         case failed          // load/processing error this run; never cached
     }
@@ -309,7 +317,7 @@ public final class LibraryScanner: @unchecked Sendable {
                                 id: String, threshold: Float, fromCache: Bool) -> AssetOutcome {
         var best: Float = -1
         for e in embeddings { best = max(best, dot(l2Normalize(e), reference)) }
-        guard best >= threshold else { return .noMatch(fromCache: fromCache) }
+        guard best >= threshold else { return .noMatch(fromCache: fromCache, bestScore: best) }
         return .match(MatchResult(assetLocalIdentifier: id,
                                   similarity: best, matchedAt: Date()),
                       fromCache: fromCache)
@@ -342,9 +350,14 @@ public final class LibraryScanner: @unchecked Sendable {
             return (image, inCloud)
         }
 
-        var (image, inCloud) = request(.fastFormat)
+        // .highQualityFormat first: .fastFormat may return a heavily degraded
+        // tiny thumbnail ("sacrifice quality for speed"), and a 112px face
+        // crop from a ~80px face is too blurred to match — embeddings land
+        // below threshold with no visible error. Decode stays cheap because
+        // targetSize caps it at 640px.
+        var (image, inCloud) = request(.highQualityFormat)
         if image == nil && !inCloud {
-            (image, inCloud) = request(.highQualityFormat)
+            (image, inCloud) = request(.fastFormat)
         }
         // Last resort: fetch the ORIGINAL data and downsample it ourselves via
         // ImageIO. Bypasses the Photos thumbnail pipeline entirely — some

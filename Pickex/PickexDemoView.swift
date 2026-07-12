@@ -70,6 +70,7 @@ struct PickexDemoView: View {
                 if let p = progress {
                     ProgressView(value: p.fraction) {
                         Text("\(p.processed)/\(p.total) · \(p.matchCount) Treffer"
+                             + (p.bestSimilarity > -1 ? String(format: " · best %.2f", p.bestSimilarity) : "")
                              + (p.skippedNotLocal > 0 ? " · \(p.skippedNotLocal) nicht lokal" : "")
                              + (p.servedFromCache > 0 ? " · \(p.servedFromCache) aus Cache" : "")
                              + (p.failedToProcess > 0 ? " · ⚠️ \(p.failedToProcess) fehlgeschlagen" : ""))
