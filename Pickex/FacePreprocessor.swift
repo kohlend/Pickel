@@ -88,7 +88,7 @@ public final class FacePreprocessor {
 
     /// Bumped on every alignment-logic change so the demo UI can prove which
     /// code version is actually running (stale-build debugging).
-    public static let debugVersion = "v3-eyes+pointsInImage"
+    public static let debugVersion = "v4-cgrender"
 
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config
@@ -198,8 +198,13 @@ public final class FacePreprocessor {
     /// same/different-person separation is unchanged (see Pickex/README.md).
     private func alignAndRender(_ face: VNFaceObservation,
                                 in image: CIImage, W: CGFloat, H: CGFloat) throws -> (CVPixelBuffer, Bool) {
+        // Landmarks are junk sometimes (observed: "eyes" 4.6 px apart on a
+        // 100 px face). Sanity: eye distance must be a plausible fraction of
+        // the face box, else fall back to the (known-good) bbox crop.
+        let faceBoxWidthPx = face.boundingBox.width * W
         if let eyes = eyeCenters(of: face, imageWidth: W, imageHeight: H),
-           hypot(eyes.right.x - eyes.left.x, eyes.right.y - eyes.left.y) > 8 {
+           hypot(eyes.right.x - eyes.left.x, eyes.right.y - eyes.left.y)
+               > max(8, 0.15 * faceBoxWidthPx) {
             let transform = eyePairTransform(from: eyes)
             return (try render(image, transform: transform), true)
         }
@@ -356,16 +361,34 @@ public final class FacePreprocessor {
     // MARK: Step 3 + 5 — resample & pack into a CVPixelBuffer
 
     private func render(_ image: CIImage, transform: CGAffineTransform) throws -> CVPixelBuffer {
+        // CGContext-based warp. Its semantics are unambiguous and match the
+        // transform math exactly (bitmap origin bottom-left, y-up, source
+        // pixel p lands at transform(p)). The previous CIContext.render path
+        // produced mis-scaled output for rotated similarity transforms even
+        // though axis-aligned (bbox) transforms rendered correctly.
         let size = config.outputSize
+        guard let cg = ciContext.createCGImage(image, from: image.extent) else {
+            throw FacePreprocessError.renderFailed
+        }
         guard let buffer = makePixelBuffer(width: size, height: size) else {
             throw FacePreprocessError.pixelBufferCreationFailed
         }
-        let aligned = image.transformed(by: transform)
-        // Render exactly the 112×112 region; Core Image resamples on the GPU.
-        ciContext.render(aligned,
-                         to: buffer,
-                         bounds: CGRect(x: 0, y: 0, width: size, height: size),
-                         colorSpace: outputColorSpace)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(buffer),
+                                  width: size, height: size,
+                                  bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                                  space: outputColorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else {
+            throw FacePreprocessError.renderFailed
+        }
+        ctx.interpolationQuality = .high
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        ctx.concatenate(transform)
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
         return buffer
     }
 
