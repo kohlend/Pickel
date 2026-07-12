@@ -59,6 +59,14 @@ public struct FacePreprocessorConfig {
     /// missing. If false, such faces throw `.landmarksUnavailable`.
     public var allowBoundingBoxFallback: Bool = true
 
+    /// Eye-landmark sanity gate: the detected inter-eye distance must be at
+    /// least this fraction of the face-box width for the landmark-aligned
+    /// path; otherwise the bbox crop is used. Real eye centers sit at
+    /// ~0.42–0.46 of the box width; the iOS simulator's CPU-only landmarks
+    /// were measured at ~0.26–0.27 (and sometimes pure noise), so 0.32
+    /// cleanly separates junk landmarks from real ones.
+    public var minEyeDistanceToBoxRatio: CGFloat = 0.32
+
     /// Side length the model expects.
     public let outputSize: Int = 112
 
@@ -88,7 +96,7 @@ public final class FacePreprocessor {
 
     /// Bumped on every alignment-logic change so the demo UI can prove which
     /// code version is actually running (stale-build debugging).
-    public static let debugVersion = "v4-cgrender"
+    public static let debugVersion = "v5-eyegate0.32"
 
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config
@@ -198,13 +206,14 @@ public final class FacePreprocessor {
     /// same/different-person separation is unchanged (see Pickex/README.md).
     private func alignAndRender(_ face: VNFaceObservation,
                                 in image: CIImage, W: CGFloat, H: CGFloat) throws -> (CVPixelBuffer, Bool) {
-        // Landmarks are junk sometimes (observed: "eyes" 4.6 px apart on a
-        // 100 px face). Sanity: eye distance must be a plausible fraction of
-        // the face box, else fall back to the (known-good) bbox crop.
+        // Landmarks can be junk (simulator CPU path: nondeterministic points,
+        // eye distances ~60% of plausible). Gate on the eye-distance/box-width
+        // ratio (see config.minEyeDistanceToBoxRatio); junk falls back to the
+        // known-good bbox crop, real landmarks get the aligned crop.
         let faceBoxWidthPx = face.boundingBox.width * W
         if let eyes = eyeCenters(of: face, imageWidth: W, imageHeight: H),
            hypot(eyes.right.x - eyes.left.x, eyes.right.y - eyes.left.y)
-               > max(8, 0.15 * faceBoxWidthPx) {
+               > max(8, config.minEyeDistanceToBoxRatio * faceBoxWidthPx) {
             let transform = eyePairTransform(from: eyes)
             return (try render(image, transform: transform), true)
         }
