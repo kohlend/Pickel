@@ -165,10 +165,19 @@ public final class FacePreprocessor {
 
     /// Landmark alignment with bbox fallback for one face; returns the buffer
     /// and whether landmarks were used.
+    ///
+    /// Alignment uses ONLY the two eye centers (Vision's most reliable
+    /// landmarks): two point pairs determine the 4-DOF similarity transform
+    /// exactly. An earlier version least-squares-fitted five points, but
+    /// Vision's nose/mouth heuristics are unstable and the fit "compensated"
+    /// with wild zoom/rotation. Validated against InsightFace's 5-point
+    /// norm_crop: embeddings of eyes-only crops agree at cosine 0.97-0.98 and
+    /// same/different-person separation is unchanged (see Pickex/README.md).
     private func alignAndRender(_ face: VNFaceObservation,
                                 in image: CIImage, W: CGFloat, H: CGFloat) throws -> (CVPixelBuffer, Bool) {
-        if let src = fivePoints(of: face, imageWidth: W, imageHeight: H) {
-            let transform = try similarityTransform(from: src, to: templateCI())
+        if let eyes = eyeCenters(of: face, imageWidth: W, imageHeight: H),
+           hypot(eyes.right.x - eyes.left.x, eyes.right.y - eyes.left.y) > 8 {
+            let transform = eyePairTransform(from: eyes)
             return (try render(image, transform: transform), true)
         }
         guard config.allowBoundingBoxFallback else {
@@ -214,61 +223,59 @@ public final class FacePreprocessor {
         return faces
     }
 
-    /// Five alignment points in CI coordinates (origin bottom-left, y-up),
-    /// ordered [left-eye, right-eye, nose, left-mouth, right-mouth] by image-x.
-    /// Returns nil if the required landmark regions are missing.
-    private func fivePoints(of face: VNFaceObservation,
-                            imageWidth W: CGFloat, imageHeight H: CGFloat) -> [CGPoint]? {
+    /// Both eye centers in CI coordinates (origin bottom-left, y-up), ordered
+    /// by image-x (left = smaller x) so the mapping is roll-invariant.
+    /// Prefers the pupil when Vision provides it, else the eye-region centroid.
+    private func eyeCenters(of face: VNFaceObservation,
+                            imageWidth W: CGFloat, imageHeight H: CGFloat) -> (left: CGPoint, right: CGPoint)? {
         guard let lm = face.landmarks,
               let leftEyeRegion = lm.leftEye,
-              let rightEyeRegion = lm.rightEye,
-              let noseRegion = lm.nose,
-              let lipsRegion = lm.outerLips else { return nil }
+              let rightEyeRegion = lm.rightEye else { return nil }
 
         let box = face.boundingBox
 
         // Landmark points are normalized *within the face bounding box* and
         // y-up. Map to absolute CI pixel coordinates (also y-up).
-        func toCI(_ region: VNFaceLandmarkRegion2D) -> [CGPoint] {
-            region.normalizedPoints.map { p in
-                CGPoint(x: (box.origin.x + CGFloat(p.x) * box.width) * W,
-                        y: (box.origin.y + CGFloat(p.y) * box.height) * H)
-            }
+        func toCI(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: (box.origin.x + p.x * box.width) * W,
+                    y: (box.origin.y + p.y * box.height) * H)
+        }
+        func regionCentroid(_ region: VNFaceLandmarkRegion2D) -> CGPoint {
+            centroid(region.normalizedPoints.map(toCI))
         }
 
-        // Eye centers: prefer the pupil (single point) when Vision provides it.
-        let eyeA = (lm.leftPupil?.normalizedPoints.first).map {
-            CGPoint(x: (box.origin.x + CGFloat($0.x) * box.width) * W,
-                    y: (box.origin.y + CGFloat($0.y) * box.height) * H)
-        } ?? centroid(toCI(leftEyeRegion))
-        let eyeB = (lm.rightPupil?.normalizedPoints.first).map {
-            CGPoint(x: (box.origin.x + CGFloat($0.x) * box.width) * W,
-                    y: (box.origin.y + CGFloat($0.y) * box.height) * H)
-        } ?? centroid(toCI(rightEyeRegion))
-
-        let nose = centroid(toCI(noseRegion))
-
-        // Mouth corners = the outer-lip points with the min / max x.
-        let lips = toCI(lipsRegion)
-        guard let mouthMinX = lips.min(by: { $0.x < $1.x }),
-              let mouthMaxX = lips.max(by: { $0.x < $1.x }) else { return nil }
-
-        // Order eyes/mouth by image-x so template mapping is roll-invariant.
-        let (eyeLeft, eyeRight) = eyeA.x <= eyeB.x ? (eyeA, eyeB) : (eyeB, eyeA)
-        return [eyeLeft, eyeRight, nose, mouthMinX, mouthMaxX]
+        let eyeA = (lm.leftPupil?.normalizedPoints.first).map(toCI) ?? regionCentroid(leftEyeRegion)
+        let eyeB = (lm.rightPupil?.normalizedPoints.first).map(toCI) ?? regionCentroid(rightEyeRegion)
+        return eyeA.x <= eyeB.x ? (eyeA, eyeB) : (eyeB, eyeA)
     }
 
     // MARK: Step 2 — geometry
 
-    /// Template in CI coordinates (flip the published top-left template to y-up).
-    private func templateCI() -> [CGPoint] {
+    /// Exact similarity transform (rotation + uniform scale + translation)
+    /// mapping the detected eye pair onto the ArcFace template's eye points
+    /// (flipped to CI y-up coordinates). Two point pairs fully determine the
+    /// 4 degrees of freedom — no least squares, no unstable extra landmarks.
+    private func eyePairTransform(from eyes: (left: CGPoint, right: CGPoint)) -> CGAffineTransform {
         let side = CGFloat(config.outputSize)
-        return Self.arcFaceTemplateTopLeft.map { CGPoint(x: $0.x, y: side - $0.y) }
+        let tL = CGPoint(x: Self.arcFaceTemplateTopLeft[0].x, y: side - Self.arcFaceTemplateTopLeft[0].y)
+        let tR = CGPoint(x: Self.arcFaceTemplateTopLeft[1].x, y: side - Self.arcFaceTemplateTopLeft[1].y)
+
+        let sv = CGPoint(x: eyes.right.x - eyes.left.x, y: eyes.right.y - eyes.left.y)
+        let dv = CGPoint(x: tR.x - tL.x, y: tR.y - tL.y)
+        let scale = hypot(dv.x, dv.y) / hypot(sv.x, sv.y)
+        let angle = atan2(dv.y, dv.x) - atan2(sv.y, sv.x)
+        let a = scale * cos(angle)
+        let b = scale * sin(angle)
+        // Solve translation so that eyes.left maps exactly onto tL:
+        // x' = a·x − b·y + tx ,  y' = b·x + a·y + ty
+        let tx = tL.x - (a * eyes.left.x - b * eyes.left.y)
+        let ty = tL.y - (b * eyes.left.x + a * eyes.left.y)
+        return CGAffineTransform(a: a, b: b, c: -b, d: a, tx: tx, ty: ty)
     }
 
-    /// Least-squares 2-D similarity transform (rotation + uniform scale +
-    /// translation, no reflection) mapping `src` → `dst`. Solves for
-    /// (a, b, tx, ty) in:  X = a·x − b·y + tx ,  Y = b·x + a·y + ty.
+    /// (Retained for reference/tests) least-squares 2-D similarity transform
+    /// mapping `src` → `dst` — unused by the main path since the eyes-only
+    /// alignment replaced the 5-point fit.
     private func similarityTransform(from src: [CGPoint], to dst: [CGPoint]) throws -> CGAffineTransform {
         precondition(src.count == dst.count && src.count >= 2)
         // Normal equations A·p = c  (A is 4×4 symmetric, p = [a,b,tx,ty]).
