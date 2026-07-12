@@ -24,6 +24,9 @@ struct PickexDemoView: View {
     @State private var matches: [MatchResult] = []
     @State private var thumbnails: [String: UIImage] = [:]
     @State private var scanTask: Task<Void, Never>?
+    // Debug: the actual 112×112 crops fed to the model + embedding fingerprints.
+    @State private var debugCrops: [UIImage] = []
+    @State private var debugInfo = ""
 
     var body: some View {
         NavigationStack {
@@ -48,6 +51,21 @@ struct PickexDemoView: View {
 
                 Text(status).font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !debugCrops.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("DEBUG — Crops, wie sie das Modell sieht:").font(.caption2)
+                        HStack(spacing: 4) {
+                            ForEach(Array(debugCrops.enumerated()), id: \.offset) { _, img in
+                                Image(uiImage: img)
+                                    .resizable().frame(width: 56, height: 56)
+                                    .border(.red)
+                            }
+                        }
+                        Text(debugInfo).font(.system(size: 9, design: .monospaced))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
 
                 if let p = progress {
                     ProgressView(value: p.fraction) {
@@ -113,6 +131,29 @@ struct PickexDemoView: View {
             // 2. Model + pipeline objects.
             let embedder = try Self.makeEmbedder()
             let builder = ReferenceProfileBuilder(embedder: embedder)
+
+            // DEBUG: show the exact 112×112 crops + embedding fingerprints for
+            // the reference photos, to localize "everything scores 1.00" bugs.
+            let pre = FacePreprocessor()
+            let ciCtx = CIContext()
+            var crops: [UIImage] = []
+            var prints: [String] = []
+            for (i, r) in refs.enumerated() {
+                if let res = try? pre.makeFaceInputDetailed(from: r.cgImage, orientation: r.orientation) {
+                    let ci = CIImage(cvPixelBuffer: res.pixelBuffer)
+                    if let cg = ciCtx.createCGImage(ci, from: ci.extent) {
+                        crops.append(UIImage(cgImage: cg))
+                    }
+                }
+                if let e = try? embedder.embedding(from: r.cgImage, orientation: r.orientation) {
+                    let v = e.vector
+                    let norm = sqrt(v.reduce(0) { $0 + $1 * $1 })
+                    prints.append(String(format: "F%d: norm=%.2f [%+.2f %+.2f %+.2f %+.2f]",
+                                         i + 1, norm, v[0], v[1], v[2], v[3]))
+                }
+            }
+            debugCrops = crops
+            debugInfo = prints.joined(separator: "\n")
 
             // 3. Reference profile (Step B) — surface warnings.
             status = "Erstelle Referenzprofil…"
