@@ -258,6 +258,15 @@ public final class LibraryScanner: @unchecked Sendable {
         }
     }
 
+    /// DEBUG: load an asset exactly the way the scan does (same PHImageManager
+    /// request + downscale), so the demo can render the scan-side crop and
+    /// compare it to the reference-side crop.
+    public func debugLoadImage(assetID: String) -> CGImage? {
+        guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetID],
+                                              options: nil).firstObject else { return nil }
+        return Self.requestCGImage(for: asset, config: config).0
+    }
+
     // MARK: per-asset work (inside a task-group child, off-main)
 
     private enum AssetOutcome: Sendable {

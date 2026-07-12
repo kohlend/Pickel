@@ -201,6 +201,24 @@ struct PickexDemoView: View {
                     loadThumbnail(for: m.assetLocalIdentifier)
                 }
             }
+            // DEBUG: render the SCAN-side crop of the top match, to compare
+            // against the reference-side crop (same photo should look + embed
+            // the same; a difference means a scan-path/loading bug).
+            if let top = matches.first,
+               let scanCG = scanner.debugLoadImage(assetID: top.assetLocalIdentifier) {
+                if let res = try? pre.makeFaceInputDetailed(from: scanCG) {
+                    let ci = CIImage(cvPixelBuffer: res.pixelBuffer)
+                    if let cg = ciCtx.createCGImage(ci, from: ci.extent) {
+                        debugCrops.append(UIImage(cgImage: cg))
+                    }
+                }
+                var line = "SCAN top \(String(format: "%.2f", top.similarity)): " + pre.debugEyeInfo(from: scanCG)
+                if let e = try? embedder.embedding(from: scanCG) {
+                    let v = e.vector; let n = sqrt(v.reduce(0) { $0 + $1 * $1 })
+                    line += String(format: "  emb norm=%.2f [%+.2f %+.2f %+.2f]", n, v[0], v[1], v[2])
+                }
+                debugInfo += "\n" + line
+            }
             status = "Fertig: \(matches.count) Treffer."
         } catch ReferenceProfileError.noFaceInAnyPhoto(let skipped) {
             let details = skipped.map { s -> String in
