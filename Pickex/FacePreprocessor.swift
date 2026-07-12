@@ -226,26 +226,26 @@ public final class FacePreprocessor {
     /// Both eye centers in CI coordinates (origin bottom-left, y-up), ordered
     /// by image-x (left = smaller x) so the mapping is roll-invariant.
     /// Prefers the pupil when Vision provides it, else the eye-region centroid.
+    ///
+    /// Uses `pointsInImage(imageSize:)` — Vision's official conversion to
+    /// image coordinates (lower-left origin, matching CI space). Manually
+    /// mapping `normalizedPoints` via the bounding box mis-scaled the eye
+    /// distance ~3-4× (massively zoomed crops); this API removes any
+    /// ambiguity about what the normalized values are relative to.
     private func eyeCenters(of face: VNFaceObservation,
                             imageWidth W: CGFloat, imageHeight H: CGFloat) -> (left: CGPoint, right: CGPoint)? {
         guard let lm = face.landmarks,
               let leftEyeRegion = lm.leftEye,
               let rightEyeRegion = lm.rightEye else { return nil }
 
-        let box = face.boundingBox
-
-        // Landmark points are normalized *within the face bounding box* and
-        // y-up. Map to absolute CI pixel coordinates (also y-up).
-        func toCI(_ p: CGPoint) -> CGPoint {
-            CGPoint(x: (box.origin.x + p.x * box.width) * W,
-                    y: (box.origin.y + p.y * box.height) * H)
-        }
-        func regionCentroid(_ region: VNFaceLandmarkRegion2D) -> CGPoint {
-            centroid(region.normalizedPoints.map(toCI))
+        let size = CGSize(width: W, height: H)
+        func center(_ region: VNFaceLandmarkRegion2D?) -> CGPoint? {
+            guard let pts = region?.pointsInImage(imageSize: size), !pts.isEmpty else { return nil }
+            return centroid(pts)
         }
 
-        let eyeA = (lm.leftPupil?.normalizedPoints.first).map(toCI) ?? regionCentroid(leftEyeRegion)
-        let eyeB = (lm.rightPupil?.normalizedPoints.first).map(toCI) ?? regionCentroid(rightEyeRegion)
+        guard let eyeA = center(lm.leftPupil) ?? center(leftEyeRegion),
+              let eyeB = center(lm.rightPupil) ?? center(rightEyeRegion) else { return nil }
         return eyeA.x <= eyeB.x ? (eyeA, eyeB) : (eyeB, eyeA)
     }
 
