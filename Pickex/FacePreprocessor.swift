@@ -86,9 +86,32 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
+    /// Bumped on every alignment-logic change so the demo UI can prove which
+    /// code version is actually running (stale-build debugging).
+    public static let debugVersion = "v3-eyes+pointsInImage"
+
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config
         self.ciContext = CIContext(options: [.cacheIntermediates: false])
+    }
+
+    /// Debug helper: raw detection/eye geometry for the largest face, as text.
+    public func debugEyeInfo(from cgImage: CGImage,
+                             orientation: CGImagePropertyOrientation = .up) -> String {
+        let W = CGFloat(cgImage.width), H = CGFloat(cgImage.height)
+        guard let faces = try? detectFaces(in: cgImage, orientation: orientation),
+              let largest = faces.max(by: {
+                  $0.boundingBox.width * $0.boundingBox.height <
+                  $1.boundingBox.width * $1.boundingBox.height
+              }) else { return "detect: no face" }
+        let bb = largest.boundingBox
+        guard let eyes = eyeCenters(of: largest, imageWidth: W, imageHeight: H) else {
+            return "eyes: unavailable"
+        }
+        let d = hypot(eyes.right.x - eyes.left.x, eyes.right.y - eyes.left.y)
+        return String(format: "img %.0fx%.0f box[%.2f,%.2f %.2fx%.2f] eL(%.0f,%.0f) eR(%.0f,%.0f) dist=%.1f",
+                      W, H, bb.origin.x, bb.origin.y, bb.width, bb.height,
+                      eyes.left.x, eyes.left.y, eyes.right.x, eyes.right.y, d)
     }
 
     // MARK: Public API

@@ -138,6 +138,7 @@ struct PickexDemoView: View {
             let ciCtx = CIContext()
             var crops: [UIImage] = []
             var prints: [String] = []
+            prints.append("Preprocessor \(FacePreprocessor.debugVersion)")
             for (i, r) in refs.enumerated() {
                 if let res = try? pre.makeFaceInputDetailed(from: r.cgImage, orientation: r.orientation) {
                     let ci = CIImage(cvPixelBuffer: res.pixelBuffer)
@@ -145,11 +146,12 @@ struct PickexDemoView: View {
                         crops.append(UIImage(cgImage: cg))
                     }
                 }
+                prints.append("F\(i + 1): " + pre.debugEyeInfo(from: r.cgImage, orientation: r.orientation))
                 if let e = try? embedder.embedding(from: r.cgImage, orientation: r.orientation) {
                     let v = e.vector
                     let norm = sqrt(v.reduce(0) { $0 + $1 * $1 })
-                    prints.append(String(format: "F%d: norm=%.2f [%+.2f %+.2f %+.2f %+.2f]",
-                                         i + 1, norm, v[0], v[1], v[2], v[3]))
+                    prints.append(String(format: "    emb norm=%.2f [%+.2f %+.2f %+.2f]",
+                                         norm, v[0], v[1], v[2]))
                 }
             }
             debugCrops = crops
