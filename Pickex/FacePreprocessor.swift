@@ -59,12 +59,16 @@ public struct FacePreprocessorConfig {
     /// missing. If false, such faces throw `.landmarksUnavailable`.
     public var allowBoundingBoxFallback: Bool = true
 
-    /// Eye-landmark sanity gate: the detected inter-eye distance must be at
-    /// least this fraction of the face-box width for the landmark-aligned
-    /// path; otherwise the bbox crop is used. Real eye centers sit at
-    /// ~0.42–0.46 of the box width; the iOS simulator's CPU-only landmarks
-    /// were measured at ~0.26–0.27 (and sometimes pure noise), so 0.32
-    /// cleanly separates junk landmarks from real ones.
+    /// Master switch for landmark-based alignment. Default OFF: Vision's
+    /// landmarks proved unreliable and nondeterministic in practice (same face
+    /// yielding inter-eye distances from 5 px to 945 px), which produced
+    /// broken aligned crops and near-random cross-photo matching. With this
+    /// off we always use the bounding-box crop, which is consistent.
+    public var useLandmarkAlignment: Bool = false
+
+    /// (Only when useLandmarkAlignment is true) eye-landmark sanity gate: the
+    /// detected inter-eye distance must be at least this fraction of the
+    /// face-box width to trust the landmarks, else the bbox crop is used.
     public var minEyeDistanceToBoxRatio: CGFloat = 0.32
 
     /// Side length the model expects.
@@ -96,7 +100,7 @@ public final class FacePreprocessor {
 
     /// Bumped on every alignment-logic change so the demo UI can prove which
     /// code version is actually running (stale-build debugging).
-    public static let debugVersion = "v5-eyegate0.32"
+    public static let debugVersion = "v6-bboxonly"
 
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config
@@ -211,7 +215,8 @@ public final class FacePreprocessor {
         // ratio (see config.minEyeDistanceToBoxRatio); junk falls back to the
         // known-good bbox crop, real landmarks get the aligned crop.
         let faceBoxWidthPx = face.boundingBox.width * W
-        if let eyes = eyeCenters(of: face, imageWidth: W, imageHeight: H),
+        if config.useLandmarkAlignment,
+           let eyes = eyeCenters(of: face, imageWidth: W, imageHeight: H),
            hypot(eyes.right.x - eyes.left.x, eyes.right.y - eyes.left.y)
                > max(8, config.minEyeDistanceToBoxRatio * faceBoxWidthPx) {
             let transform = eyePairTransform(from: eyes)
