@@ -65,7 +65,7 @@ public struct FacePreprocessorConfig {
     /// yielding inter-eye distances from 5 px to 945 px), which produced
     /// broken aligned crops and near-random cross-photo matching. With this
     /// off we always use the bounding-box crop, which is consistent.
-    public var useLandmarkAlignment: Bool = false
+    public var useLandmarkAlignment: Bool = true
 
     /// (Only when useLandmarkAlignment is true) eye-landmark sanity gate: the
     /// detected inter-eye distance must be at least this fraction of the
@@ -101,7 +101,7 @@ public final class FacePreprocessor {
 
     /// Bumped on every alignment-logic change so the demo UI can prove which
     /// code version is actually running (stale-build debugging).
-    public static let debugVersion = "v7-margin0+flip"
+    public static let debugVersion = "v8-align+margin0+flip"
 
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config
