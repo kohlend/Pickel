@@ -49,11 +49,12 @@ public enum FacePreprocessError: Error {
 }
 
 public struct FacePreprocessorConfig {
-    /// Fallback bounding-box crop margin *per side*, as a fraction of the box
-    /// size (0.25 = expand 25% left/right/top/bottom before the square crop).
-    /// Only used when landmark alignment isn't possible. Configurable, not
-    /// hard-coded — tune against your own recall/precision.
-    public var faceMarginFraction: CGFloat = 0.25
+    /// Bounding-box crop margin *per side*, as a fraction of the box size.
+    /// Default 0.0 — measured (margin×separation sweep): more margin shrinks
+    /// the face in the 112 crop and collapses different identities together.
+    /// 0.0 gave same/different GAP +0.33 vs +0.10 at 0.25. Squaring the box
+    /// already adds context on the short side.
+    public var faceMarginFraction: CGFloat = 0.0
 
     /// If true, fall back to a bounding-box+margin crop when landmarks are
     /// missing. If false, such faces throw `.landmarksUnavailable`.
@@ -100,7 +101,7 @@ public final class FacePreprocessor {
 
     /// Bumped on every alignment-logic change so the demo UI can prove which
     /// code version is actually running (stale-build debugging).
-    public static let debugVersion = "v6-bboxonly"
+    public static let debugVersion = "v7-margin0+flip"
 
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config

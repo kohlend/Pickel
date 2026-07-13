@@ -16,6 +16,7 @@
 import CoreML
 import CoreVideo
 import CoreGraphics
+import CoreImage
 import ImageIO
 
 public enum FaceEmbeddingError: Error {
@@ -40,6 +41,12 @@ public final class FaceEmbedder: @unchecked Sendable {
     private let inputName: String
     private let outputName: String
     private let expectedDimension: Int
+
+    /// Test-time flip augmentation: also embed the horizontally-mirrored crop
+    /// and sum the two vectors (InsightFace standard). Small but consistent
+    /// robustness gain; applied identically to reference and scan embeddings.
+    public var useFlipAugmentation = true
+    private let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     /// Inject an already-loaded MLModel (e.g. the Xcode-generated
     /// `FaceEmbedding().model`) plus the shared preprocessor.
@@ -103,7 +110,19 @@ public final class FaceEmbedder: @unchecked Sendable {
 
     // MARK: model plumbing
 
+    /// Runs the model, optionally adding the flipped crop's embedding.
+    /// Returns the (unnormalized) sum; callers L2-normalize downstream.
     private func runModel(on buffer: CVPixelBuffer) throws -> [Float] {
+        var vector = try predict(on: buffer)
+        if useFlipAugmentation, let flipped = horizontallyFlipped(buffer) {
+            if let v2 = try? predict(on: flipped) {
+                for i in vector.indices { vector[i] += v2[i] }
+            }
+        }
+        return vector
+    }
+
+    private func predict(on buffer: CVPixelBuffer) throws -> [Float] {
         let provider: MLFeatureProvider
         do {
             provider = try MLDictionaryFeatureProvider(
@@ -127,6 +146,26 @@ public final class FaceEmbedder: @unchecked Sendable {
             throw FaceEmbeddingError.unexpectedOutputSize(vector.count)
         }
         return vector
+    }
+
+    /// Horizontally mirror a 112×112 BGRA buffer into a fresh buffer.
+    private func horizontallyFlipped(_ buffer: CVPixelBuffer) -> CVPixelBuffer? {
+        let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)
+        let ci = CIImage(cvPixelBuffer: buffer)
+            .transformed(by: CGAffineTransform(scaleX: -1, y: 1)
+                .translatedBy(x: -CGFloat(w), y: 0))
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+        ]
+        var out: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, w, h,
+                                  kCVPixelFormatType_32BGRA,
+                                  attrs as CFDictionary, &out) == kCVReturnSuccess,
+              let out else { return nil }
+        ciContext.render(ci, to: out)
+        return out
     }
 
     /// Convert an MLMultiArray to [Float], handling the common element types.
