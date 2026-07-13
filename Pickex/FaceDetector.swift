@@ -53,7 +53,7 @@ public final class SCRFDDetector: @unchecked Sendable {
         } catch { return [] }
 
         var faces: [DetectedFace] = []
-        for (i, stride) in strides.enumerated() {
+        for stride in strides {
             guard let scores = out.featureValue(for: "s\(stride)")?.multiArrayValue,
                   let bboxes = out.featureValue(for: "b\(stride)")?.multiArrayValue,
                   let kpss = out.featureValue(for: "k\(stride)")?.multiArrayValue else { continue }
