@@ -22,7 +22,7 @@ public struct DetectedFace: Sendable {
     public let score: Float
 }
 
-public final class FaceDetector: @unchecked Sendable {
+public final class SCRFDDetector: @unchecked Sendable {
 
     private let model: MLModel
     private let inputSize = 640

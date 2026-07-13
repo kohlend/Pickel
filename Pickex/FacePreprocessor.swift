@@ -38,7 +38,7 @@ public struct FacePreprocessorConfig {
 public final class FacePreprocessor {
 
     private let config: FacePreprocessorConfig
-    private let detector: FaceDetector?
+    private let detector: SCRFDDetector?
     private let ciContext: CIContext
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
@@ -58,14 +58,14 @@ public final class FacePreprocessor {
     /// unless one is injected. Non-throwing so it can be a default argument;
     /// detection surfaces `.detectorUnavailable` if the model is missing.
     public init(config: FacePreprocessorConfig = FacePreprocessorConfig(),
-                detector: FaceDetector? = nil) {
+                detector: SCRFDDetector? = nil) {
         self.config = config
         self.ciContext = CIContext(options: [.cacheIntermediates: false])
         if let detector {
             self.detector = detector
         } else if let url = Bundle.main.url(forResource: "FaceDetectorModel", withExtension: "mlmodelc")
                     ?? Bundle.main.url(forResource: "FaceDetector", withExtension: "mlmodelc") {
-            self.detector = try? FaceDetector(modelURL: url)
+            self.detector = try? SCRFDDetector(modelURL: url)
         } else {
             self.detector = nil
         }
