@@ -63,7 +63,8 @@ public final class FacePreprocessor {
         self.ciContext = CIContext(options: [.cacheIntermediates: false])
         if let detector {
             self.detector = detector
-        } else if let url = Bundle.main.url(forResource: "FaceDetector", withExtension: "mlmodelc") {
+        } else if let url = Bundle.main.url(forResource: "FaceDetectorModel", withExtension: "mlmodelc")
+                    ?? Bundle.main.url(forResource: "FaceDetector", withExtension: "mlmodelc") {
             self.detector = try? FaceDetector(modelURL: url)
         } else {
             self.detector = nil
