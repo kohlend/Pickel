@@ -239,7 +239,9 @@ struct PickexDemoView: View {
     /// FaceEmbedding.mlpackage or FaceEmbedding_fp16.mlpackage (no dependency
     /// on the Xcode-generated class name).
     private static func makeEmbedder() throws -> FaceEmbedder {
-        let candidates = ["FaceEmbedding", "FaceEmbedding_fp16", "FaceEmbedding_fp32"]
+        // Prefer the larger, more accurate R50 model when present.
+        let candidates = ["FaceEmbeddingR50", "FaceEmbedding",
+                          "FaceEmbedding_fp16", "FaceEmbedding_fp32"]
         for name in candidates {
             if let url = Bundle.main.url(forResource: name, withExtension: "mlmodelc") {
                 return try FaceEmbedder(modelURL: url)

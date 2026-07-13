@@ -87,9 +87,43 @@ public enum ScanEvent: Sendable {
     case match(MatchResult)
 }
 
+/// How a face embedding is scored against the reference profile.
+public enum MatchingStrategy: Sendable {
+    /// Cosine to the aggregated (mean) reference only. Best when the reference
+    /// photos are all of a similar condition (the mean denoises them).
+    case mean
+    /// Max cosine to any single reference photo. Best when references span
+    /// very different conditions the mean would blur.
+    case bestOfSet
+    /// max(mean, bestOfSet). Never scores a same-person photo lower than the
+    /// mean, and rescues diverse-condition matches via individual references.
+    /// Default — biased toward recall (what "mixed makeup/angle refs" needs).
+    case combined
+}
+
+/// Precomputed reference vectors + strategy; scores a face embedding.
+struct ReferenceMatcher: Sendable {
+    let mean: [Float]          // L2-normalized aggregated reference
+    let set: [[Float]]         // L2-normalized individual references
+    let strategy: MatchingStrategy
+
+    func score(_ embedding: [Float]) -> Float {
+        let x = l2Normalize(embedding)
+        let meanScore = { dot(x, mean) }
+        let setScore = { set.map { dot(x, $0) }.max() }
+        switch strategy {
+        case .mean:      return meanScore()
+        case .bestOfSet: return setScore() ?? meanScore()
+        case .combined:  return max(meanScore(), setScore() ?? meanScore())
+        }
+    }
+}
+
 public struct LibraryScannerConfig {
     /// Cosine threshold for "this face is the person" — calibrated, see header.
     public var matchThreshold: Float = LibraryScanner.defaultMatchThreshold
+    /// How faces are scored against the reference profile.
+    public var matchingStrategy: MatchingStrategy = .combined
     /// Decode size for library photos (longest side, pixels).
     public var targetSize = CGSize(width: 640, height: 640)
     /// Max faces embedded per photo (largest first).
@@ -158,11 +192,11 @@ public final class LibraryScanner: @unchecked Sendable {
     /// the cache; run a normal scan afterwards to pick up new photos.
     public func rematchFromCache(against profile: ReferenceProfile) -> [MatchResult] {
         guard let cache else { return [] }
-        let reference = l2Normalize(profile.embedding)
+        let matcher = makeMatcher(profile)
         var results: [MatchResult] = []
         cache.forEachEntry { id, embeddings in
             var best: Float = -1
-            for e in embeddings { best = max(best, dot(l2Normalize(e), reference)) }
+            for e in embeddings { best = max(best, matcher.score(e)) }
             if best >= config.matchThreshold {
                 results.append(MatchResult(assetLocalIdentifier: id,
                                            similarity: best, matchedAt: Date()))
@@ -171,11 +205,17 @@ public final class LibraryScanner: @unchecked Sendable {
         return results.sorted { $0.similarity > $1.similarity }
     }
 
+    private func makeMatcher(_ profile: ReferenceProfile) -> ReferenceMatcher {
+        ReferenceMatcher(mean: l2Normalize(profile.embedding),
+                         set: profile.referenceEmbeddings.map(l2Normalize),
+                         strategy: config.matchingStrategy)
+    }
+
     // MARK: Core scan
 
     public func scan(assets: PHFetchResult<PHAsset>,
                      against profile: ReferenceProfile) -> AsyncThrowingStream<ScanEvent, Error> {
-        let reference = l2Normalize(profile.embedding)
+        let matcher = makeMatcher(profile)
         let total = assets.count
         // Snapshot (id, modificationDate) up front — cheap metadata, avoids
         // holding PHAssets across tasks.
@@ -213,7 +253,7 @@ public final class LibraryScanner: @unchecked Sendable {
                             guard let item = iterator.next() else { return false }
                             group.addTask {
                                 try Task.checkCancellation()
-                                return Self.process(item: item, reference: reference,
+                                return Self.process(item: item, matcher: matcher,
                                                     embedder: embedder, cache: cache,
                                                     config: config)
                             }
@@ -277,13 +317,13 @@ public final class LibraryScanner: @unchecked Sendable {
     }
 
     private static func process(item: (id: String, modified: Date?),
-                                reference: [Float],
+                                matcher: ReferenceMatcher,
                                 embedder: FaceEmbedder,
                                 cache: ScanCache?,
                                 config: LibraryScannerConfig) -> AssetOutcome {
         // 1. Cache fast path — including cached "no faces" results.
         if let cached = cache?.lookup(localIdentifier: item.id, modificationDate: item.modified) {
-            return outcome(for: cached, reference: reference,
+            return outcome(for: cached, matcher: matcher,
                            id: item.id, threshold: config.matchThreshold, fromCache: true)
         }
 
@@ -318,14 +358,14 @@ public final class LibraryScanner: @unchecked Sendable {
         cache?.store(localIdentifier: item.id, modificationDate: item.modified,
                      embeddings: embeddings)
 
-        return outcome(for: embeddings, reference: reference,
+        return outcome(for: embeddings, matcher: matcher,
                        id: item.id, threshold: config.matchThreshold, fromCache: false)
     }
 
-    private static func outcome(for embeddings: [[Float]], reference: [Float],
+    private static func outcome(for embeddings: [[Float]], matcher: ReferenceMatcher,
                                 id: String, threshold: Float, fromCache: Bool) -> AssetOutcome {
         var best: Float = -1
-        for e in embeddings { best = max(best, dot(l2Normalize(e), reference)) }
+        for e in embeddings { best = max(best, matcher.score(e)) }
         guard best >= threshold else { return .noMatch(fromCache: fromCache, bestScore: best) }
         return .match(MatchResult(assetLocalIdentifier: id,
                                   similarity: best, matchedAt: Date()),

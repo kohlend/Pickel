@@ -20,6 +20,11 @@ import Foundation
 public struct ReferenceProfile {
     /// Final 512-d reference vector, L2-normalized (cosine matching downstream).
     public let embedding: [Float]
+    /// The individual L2-normalized per-photo embeddings (the "set"). Lets the
+    /// scanner match against the best-fitting reference instead of only the
+    /// mean — crucial when references span different conditions (e.g. makeup
+    /// vs. no-makeup, different angles) that a single mean would blur together.
+    public let referenceEmbeddings: [[Float]]
     /// How many photos yielded a usable face.
     public let usedPhotoCount: Int
     /// Photos that were skipped, with the reason (surface these in the UI).
@@ -173,10 +178,13 @@ public final class ReferenceProfileBuilder {
         // 4. Consistency check (soft warning) across the valid embeddings.
         let warning = consistencyWarning(for: used)
 
-        // 5. Aggregate -> final reference embedding.
+        // 5. Aggregate -> final reference embedding, and keep the individual
+        //    normalized embeddings for best-of-set matching.
         let embedding = aggregator.aggregate(used.map { $0.vector })
+        let referenceEmbeddings = used.map { l2Normalize($0.vector) }
 
         return ReferenceProfile(embedding: embedding,
+                                referenceEmbeddings: referenceEmbeddings,
                                 usedPhotoCount: used.count,
                                 skipped: skipped,
                                 multipleFaceWarnings: multipleFaceWarnings,
