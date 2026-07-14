@@ -144,7 +144,7 @@ public final class FacePreprocessor {
     /// Upright CGImage (bakes EXIF orientation) + its size. Detection and
     /// rendering both use this single space.
     private func upright(_ cgImage: CGImage,
-                         orientation: CGImagePropertyOrientation) throws -> (CGImage, CGFloat, CGFloat) {
+                         _ orientation: CGImagePropertyOrientation) throws -> (CGImage, CGFloat, CGFloat) {
         if orientation == .up {
             return (cgImage, CGFloat(cgImage.width), CGFloat(cgImage.height))
         }
