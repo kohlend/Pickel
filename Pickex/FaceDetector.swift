@@ -127,7 +127,18 @@ public final class SCRFDDetector: @unchecked Sendable {
                 dictionary: ["image": MLFeatureValue(pixelBuffer: buffer)])
             out = try model.prediction(from: input)
         } catch { return "predict THREW: \(error)" }
-        var lines = ["img \(W)x\(H) scale=\(String(format: "%.3f", scale)) bufMean=\(String(format: "%.1f", bufMean))"]
+        // Sanity: does the output depend on the input at all? Feed a solid-white
+        // 640×640 buffer; if its scores match the real buffer's, the converted
+        // model is broken (outputs independent of input).
+        var whiteMax = Float(-1)
+        if let white = solidBuffer(gray: 255),
+           let wout = try? model.prediction(from:
+               MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(pixelBuffer: white)])) {
+            whiteMax = ["s8", "s16", "s32"].compactMap {
+                wout.featureValue(for: $0)?.multiArrayValue
+            }.flatMap { floats($0) }.max() ?? -1
+        }
+        var lines = ["img \(W)x\(H) scale=\(String(format: "%.3f", scale)) bufMean=\(String(format: "%.1f", bufMean)) whiteScoreMax=\(String(format: "%.3f", whiteMax))"]
         for name in out.featureNames.sorted() {
             guard let a = out.featureValue(for: name)?.multiArrayValue else {
                 lines.append("\(name): not a multiArray"); continue
@@ -137,6 +148,32 @@ public final class SCRFDDetector: @unchecked Sendable {
             lines.append("\(name) \(a.shape.map { $0.intValue }) n=\(a.count) dt=\(a.dataType.rawValue) max=\(String(format: "%.3f", mx))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// A 640×640 BGRA buffer filled with a single gray level (for input probes).
+    private func solidBuffer(gray: UInt8) -> CVPixelBuffer? {
+        let side = inputSize
+        let attrs: [CFString: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+            kCVPixelBufferIOSurfacePropertiesKey: [:],
+        ]
+        var pb: CVPixelBuffer?
+        guard CVPixelBufferCreate(kCFAllocatorDefault, side, side,
+                                  kCVPixelFormatType_32BGRA, attrs as CFDictionary, &pb) == kCVReturnSuccess,
+              let pb else { return nil }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        let g = CGFloat(gray) / 255
+        guard let ctx = CGContext(data: CVPixelBufferGetBaseAddress(pb),
+                                  width: side, height: side, bitsPerComponent: 8,
+                                  bytesPerRow: CVPixelBufferGetBytesPerRow(pb),
+                                  space: colorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(gray: g, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        return pb
     }
 
     /// Mean byte value across the pixel buffer (BGRA). 0 => black.

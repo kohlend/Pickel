@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v13-bufmean"
+    public static let debugVersion = "v14-white"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
