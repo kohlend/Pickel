@@ -118,13 +118,16 @@ public final class SCRFDDetector: @unchecked Sendable {
         let W = cgImage.width, H = cgImage.height
         let scale = CGFloat(inputSize) / CGFloat(max(W, H))
         guard let buffer = letterbox(cgImage, scale: scale) else { return "letterbox failed" }
+        // Is the letterbox buffer actually non-black? Mean of BGRA bytes over
+        // the region the image was drawn into. 0 => letterbox produced black.
+        let bufMean = meanLuma(buffer)
         let out: MLFeatureProvider
         do {
             let input = try MLDictionaryFeatureProvider(
                 dictionary: ["image": MLFeatureValue(pixelBuffer: buffer)])
             out = try model.prediction(from: input)
         } catch { return "predict THREW: \(error)" }
-        var lines = ["img \(W)x\(H) scale=\(String(format: "%.3f", scale))"]
+        var lines = ["img \(W)x\(H) scale=\(String(format: "%.3f", scale)) bufMean=\(String(format: "%.1f", bufMean))"]
         for name in out.featureNames.sorted() {
             guard let a = out.featureValue(for: name)?.multiArrayValue else {
                 lines.append("\(name): not a multiArray"); continue
@@ -134,6 +137,24 @@ public final class SCRFDDetector: @unchecked Sendable {
             lines.append("\(name) \(a.shape.map { $0.intValue }) n=\(a.count) dt=\(a.dataType.rawValue) max=\(String(format: "%.3f", mx))")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Mean byte value across the pixel buffer (BGRA). 0 => black.
+    private func meanLuma(_ pb: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return -1 }
+        let h = CVPixelBufferGetHeight(pb)
+        let bpr = CVPixelBufferGetBytesPerRow(pb)
+        let p = base.bindMemory(to: UInt8.self, capacity: bpr * h)
+        var sum = 0.0, count = 0
+        // Sample every 16th pixel to stay cheap.
+        for y in stride(from: 0, to: h, by: 4) {
+            for x in stride(from: 0, to: bpr, by: 64) {
+                sum += Double(p[y * bpr + x]); count += 1
+            }
+        }
+        return count > 0 ? sum / Double(count) : -1
     }
 
     // MARK: helpers
