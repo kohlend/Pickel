@@ -219,6 +219,8 @@ struct PickexDemoView: View {
             let details = skipped.map { s -> String in
                 switch s.reason {
                 case .noFaceDetected: return "Foto \(s.index + 1): kein Gesicht erkannt"
+                case .processingError(let e) where e.contains("degenerateLandmarks"):
+                    return "Foto \(s.index + 1): Gesicht zu schräg/liegend — bitte frontales Foto wählen"
                 case .processingError(let e): return "Foto \(s.index + 1): FEHLER: \(e)"
                 }
             }.joined(separator: "\n")

@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v15"
+    public static let debugVersion = "v16-kpgate"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -88,9 +88,15 @@ public final class FacePreprocessor {
                                       orientation: CGImagePropertyOrientation = .up) throws -> FaceCropResult {
         let (source, _, H) = try upright(cgImage, orientation)
         let faces = try detect(source)
-        let largest = faces.max { $0.bbox.width*$0.bbox.height < $1.bbox.width*$1.bbox.height }!
-        let buffer = try align(largest, source: source, height: H)
-        return FaceCropResult(pixelBuffer: buffer, faceCount: faces.count, alignedWithLandmarks: true)
+        // Largest face first; if its keypoints fail the sanity gate fall back
+        // to the next-largest usable face instead of failing the photo.
+        let byArea = faces.sorted { $0.bbox.width*$0.bbox.height > $1.bbox.width*$1.bbox.height }
+        for face in byArea {
+            if let buffer = try? align(face, source: source, height: H) {
+                return FaceCropResult(pixelBuffer: buffer, faceCount: faces.count, alignedWithLandmarks: true)
+            }
+        }
+        throw FacePreprocessError.degenerateLandmarks
     }
 
     /// Crop EVERY detected face (largest first). Faces that fail alignment are
@@ -168,6 +174,16 @@ public final class FacePreprocessor {
 
     /// 5-point similarity alignment of one face onto the ArcFace template.
     private func align(_ face: DetectedFace, source: CGImage, height H: CGFloat) throws -> CVPixelBuffer {
+        // Keypoint sanity gate: on sideways (lying-down), strong-profile or
+        // tiny faces SCRFD's keypoints collapse (eyes nearly coincide), and
+        // aligning them zooms into the nose — a garbage embedding that then
+        // matches everything. Frontal faces have eyeDist ≈ 0.35–0.45 of the
+        // box width; reject anything clearly below that.
+        let eyeDist = hypot(face.keypoints[1].x - face.keypoints[0].x,
+                            face.keypoints[1].y - face.keypoints[0].y)
+        guard eyeDist >= 5, eyeDist >= 0.20 * face.bbox.width else {
+            throw FacePreprocessError.degenerateLandmarks
+        }
         // Keypoints are top-left pixel coords; convert to the render space
         // (bottom-left, y-up) used by CGContext. Template likewise.
         let src = face.keypoints.map { CGPoint(x: $0.x, y: H - $0.y) }
