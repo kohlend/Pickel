@@ -52,12 +52,38 @@ public final class SCRFDDetector: @unchecked Sendable {
             out = try model.prediction(from: input)
         } catch { return [] }
 
+        // The converted model's output feature names are NOT the assumed
+        // s8/b8/k8 (it was torch-traced, so coremltools named them generically).
+        // Classify each output by SHAPE instead of name: the row count
+        // N = grid²·anchors identifies the stride, and the channel count
+        // C ∈ {1,4,10} identifies score / bbox / keypoints. Fully name-agnostic.
+        var nToStride: [Int: Int] = [:]
+        for stride in strides {
+            let grid = inputSize / stride
+            nToStride[grid * grid * numAnchors] = stride
+        }
+        var scoreByStride: [Int: [Float]] = [:]
+        var bboxByStride: [Int: [Float]] = [:]
+        var kpsByStride: [Int: [Float]] = [:]
+        for name in model.modelDescription.outputDescriptionsByName.keys {
+            guard let arr = out.featureValue(for: name)?.multiArrayValue else { continue }
+            let dims = arr.shape.map { $0.intValue }
+            guard let n = dims.first(where: { nToStride[$0] != nil }),
+                  let stride = nToStride[n] else { continue }
+            let vals = floats(arr)
+            switch arr.count / n {
+            case 1: scoreByStride[stride] = vals
+            case 4: bboxByStride[stride] = vals
+            case 10: kpsByStride[stride] = vals
+            default: continue
+            }
+        }
+
         var faces: [DetectedFace] = []
         for stride in strides {
-            guard let scores = out.featureValue(for: "s\(stride)")?.multiArrayValue,
-                  let bboxes = out.featureValue(for: "b\(stride)")?.multiArrayValue,
-                  let kpss = out.featureValue(for: "k\(stride)")?.multiArrayValue else { continue }
-            let sc = floats(scores), bp = floats(bboxes), kp = floats(kpss)
+            guard let sc = scoreByStride[stride],
+                  let bp = bboxByStride[stride],
+                  let kp = kpsByStride[stride] else { continue }
             let grid = inputSize / stride
             let fStride = Float(stride)
             var row = 0
