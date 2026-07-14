@@ -154,9 +154,6 @@ struct PickexDemoView: View {
                     }
                 }
                 prints.append("F\(i + 1): " + pre.debugEyeInfo(from: r.cgImage, orientation: r.orientation))
-                if i == 0 {
-                    prints.append("DET " + pre.debugDetectorDiagnostics(from: r.cgImage, orientation: r.orientation))
-                }
                 if let e = try? embedder.embedding(from: r.cgImage, orientation: r.orientation) {
                     let v = e.vector
                     let norm = sqrt(v.reduce(0) { $0 + $1 * $1 })
@@ -186,15 +183,10 @@ struct PickexDemoView: View {
                 status = "Kein Foto-Zugriff erlaubt."; return
             }
 
-            // 5. Scan (Step C) — matches appear live.
-            // DEBUG: threshold lowered so ALL face-bearing photos surface,
-            // ranked by score. Lets us see whether a photo of the reference
-            // person ranks high (pipeline OK, only library/threshold) or a
-            // known-same photo scores low (scan-path bug). Restore 0.40 later.
-            var scanConfig = LibraryScannerConfig()
-            scanConfig.matchThreshold = 0.05
+            // 5. Scan (Step C) — matches appear live. Threshold 0.40: with
+            // 5-point alignment measured same-person ≥0.57, different ~0.09.
             let scanner = LibraryScanner(embedder: embedder, cache: try? ScanCache(),
-                                         config: scanConfig)
+                                         config: LibraryScannerConfig())
             for try await event in scanner.scanEvents(against: profile) {
                 switch event {
                 case .progress(let p): progress = p
