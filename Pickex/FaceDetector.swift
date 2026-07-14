@@ -111,6 +111,31 @@ public final class SCRFDDetector: @unchecked Sendable {
         return Array(nms(faces).prefix(maxFaces))
     }
 
+    /// Diagnostic: run the model once and report predict success/throw, the
+    /// runtime output shapes, and the max score per output. Lets us see WHY
+    /// detection returns nothing without a Mac to run Core ML on.
+    public func diagnostics(_ cgImage: CGImage) -> String {
+        let W = cgImage.width, H = cgImage.height
+        let scale = CGFloat(inputSize) / CGFloat(max(W, H))
+        guard let buffer = letterbox(cgImage, scale: scale) else { return "letterbox failed" }
+        let out: MLFeatureProvider
+        do {
+            let input = try MLDictionaryFeatureProvider(
+                dictionary: ["image": MLFeatureValue(pixelBuffer: buffer)])
+            out = try model.prediction(from: input)
+        } catch { return "predict THREW: \(error)" }
+        var lines = ["img \(W)x\(H) scale=\(String(format: "%.3f", scale))"]
+        for name in out.featureNames.sorted() {
+            guard let a = out.featureValue(for: name)?.multiArrayValue else {
+                lines.append("\(name): not a multiArray"); continue
+            }
+            let f = floats(a)
+            let mx = f.max() ?? -1
+            lines.append("\(name) \(a.shape.map { $0.intValue }) n=\(a.count) dt=\(a.dataType.rawValue) max=\(String(format: "%.3f", mx))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: helpers
 
     private func floats(_ a: MLMultiArray) -> [Float] {

@@ -52,7 +52,7 @@ struct PickexDemoView: View {
                 Text(status).font(.footnote).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                if !debugCrops.isEmpty {
+                if !debugInfo.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("DEBUG — Crops, wie sie das Modell sieht:").font(.caption2)
                         HStack(spacing: 4) {
@@ -154,6 +154,9 @@ struct PickexDemoView: View {
                     }
                 }
                 prints.append("F\(i + 1): " + pre.debugEyeInfo(from: r.cgImage, orientation: r.orientation))
+                if i == 0 {
+                    prints.append("DET " + pre.debugDetectorDiagnostics(from: r.cgImage, orientation: r.orientation))
+                }
                 if let e = try? embedder.embedding(from: r.cgImage, orientation: r.orientation) {
                     let v = e.vector
                     let norm = sqrt(v.reduce(0) { $0 + $1 * $1 })

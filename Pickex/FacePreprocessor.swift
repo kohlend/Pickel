@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v11-scrfd-shapeio"
+    public static let debugVersion = "v12-diag"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -130,6 +130,15 @@ public final class FacePreprocessor {
         return String(format: "img %dx%d score=%.2f box[%.0f,%.0f %.0fx%.0f] eyeDist=%.0f",
                       source.width, source.height, f.score,
                       f.bbox.origin.x, f.bbox.origin.y, f.bbox.width, f.bbox.height, eyeDist)
+    }
+
+    /// Debug: raw detector diagnostics (predict ok/throw, output shapes, max
+    /// scores) for the largest-image path. Surfaces WHY detection is empty.
+    public func debugDetectorDiagnostics(from cgImage: CGImage,
+                                         orientation: CGImagePropertyOrientation = .up) -> String {
+        guard let (source, _, _) = try? upright(cgImage, orientation) else { return "upright failed" }
+        guard let d = detector else { return "detector unavailable (model not in bundle?)" }
+        return d.diagnostics(source)
     }
 
     // MARK: internals
