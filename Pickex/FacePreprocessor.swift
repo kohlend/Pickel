@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v16-kpgate"
+    public static let debugVersion = "v17-rotate"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -86,10 +86,9 @@ public final class FacePreprocessor {
 
     public func makeFaceInputDetailed(from cgImage: CGImage,
                                       orientation: CGImagePropertyOrientation = .up) throws -> FaceCropResult {
-        let (source, _, H) = try upright(cgImage, orientation)
-        let faces = try detect(source)
-        // Largest face first; if its keypoints fail the sanity gate fall back
-        // to the next-largest usable face instead of failing the photo.
+        let (source, faces) = try detectUsable(from: cgImage, orientation: orientation)
+        let H = CGFloat(source.height)
+        // Largest usable face first.
         let byArea = faces.sorted { $0.bbox.width*$0.bbox.height > $1.bbox.width*$1.bbox.height }
         for face in byArea {
             if let buffer = try? align(face, source: source, height: H) {
@@ -99,13 +98,14 @@ public final class FacePreprocessor {
         throw FacePreprocessError.degenerateLandmarks
     }
 
-    /// Crop EVERY detected face (largest first). Faces that fail alignment are
-    /// dropped individually. Throws `.noFaceFound` only when there are none.
+    /// Crop EVERY usable detected face (largest first). Faces that fail
+    /// alignment are dropped individually. Throws `.noFaceFound` when the
+    /// photo has no detectable face in any rotation.
     public func makeAllFaceInputs(from cgImage: CGImage,
                                   orientation: CGImagePropertyOrientation = .up,
                                   maxFaces: Int = 8) throws -> [FaceCropResult] {
-        let (source, _, H) = try upright(cgImage, orientation)
-        let faces = try detect(source)
+        let (source, faces) = try detectUsable(from: cgImage, orientation: orientation)
+        let H = CGFloat(source.height)
         return faces.prefix(max(1, maxFaces)).compactMap { face in
             guard let b = try? align(face, source: source, height: H) else { return nil }
             return FaceCropResult(pixelBuffer: b, faceCount: faces.count, alignedWithLandmarks: true)
@@ -149,11 +149,34 @@ public final class FacePreprocessor {
 
     // MARK: internals
 
-    private func detect(_ source: CGImage) throws -> [DetectedFace] {
+    /// SCRFD only handles near-upright faces: lying-down/rotated faces either
+    /// go undetected or come back with collapsed keypoints. So: bake EXIF
+    /// orientation, detect; if nothing usable, retry the image rotated 90°
+    /// left/right, then 180°. Returns the (possibly rotated) image the face
+    /// coordinates live in, plus only the faces whose keypoints pass the gate.
+    private func detectUsable(from cgImage: CGImage,
+                              orientation: CGImagePropertyOrientation) throws -> (CGImage, [DetectedFace]) {
         guard let detector else { throw FacePreprocessError.detectorUnavailable }
-        let faces = detector.detect(source, maxFaces: config.maxFaces)
-        guard !faces.isEmpty else { throw FacePreprocessError.noFaceFound }
-        return faces
+        let (base, _, _) = try upright(cgImage, orientation)
+        var sawAnyFace = false
+        for rotation in [CGImagePropertyOrientation.up, .right, .left, .down] {
+            guard let (img, _, _) = try? upright(base, rotation) else { continue }
+            let faces = detector.detect(img, maxFaces: config.maxFaces)
+            sawAnyFace = sawAnyFace || !faces.isEmpty
+            let usable = faces.filter(passesKeypointGate)
+            if !usable.isEmpty { return (img, usable) }
+        }
+        throw sawAnyFace ? FacePreprocessError.degenerateLandmarks
+                         : FacePreprocessError.noFaceFound
+    }
+
+    /// Frontal faces have eyeDist ≈ 0.35–0.45 of the box width; collapsed
+    /// keypoints (sideways/strong-profile/tiny faces) fall way below and would
+    /// align into a garbage nose-zoom crop that matches everything.
+    private func passesKeypointGate(_ face: DetectedFace) -> Bool {
+        let eyeDist = hypot(face.keypoints[1].x - face.keypoints[0].x,
+                            face.keypoints[1].y - face.keypoints[0].y)
+        return eyeDist >= 5 && eyeDist >= 0.20 * face.bbox.width
     }
 
     /// Upright CGImage (bakes EXIF orientation) + its size. Detection and
@@ -174,14 +197,7 @@ public final class FacePreprocessor {
 
     /// 5-point similarity alignment of one face onto the ArcFace template.
     private func align(_ face: DetectedFace, source: CGImage, height H: CGFloat) throws -> CVPixelBuffer {
-        // Keypoint sanity gate: on sideways (lying-down), strong-profile or
-        // tiny faces SCRFD's keypoints collapse (eyes nearly coincide), and
-        // aligning them zooms into the nose — a garbage embedding that then
-        // matches everything. Frontal faces have eyeDist ≈ 0.35–0.45 of the
-        // box width; reject anything clearly below that.
-        let eyeDist = hypot(face.keypoints[1].x - face.keypoints[0].x,
-                            face.keypoints[1].y - face.keypoints[0].y)
-        guard eyeDist >= 5, eyeDist >= 0.20 * face.bbox.width else {
+        guard passesKeypointGate(face) else {
             throw FacePreprocessError.degenerateLandmarks
         }
         // Keypoints are top-left pixel coords; convert to the render space
