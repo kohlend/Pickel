@@ -183,10 +183,15 @@ struct PickexDemoView: View {
                 status = "Kein Foto-Zugriff erlaubt."; return
             }
 
-            // 5. Scan (Step C) — matches appear live. Threshold 0.40: with
-            // 5-point alignment measured same-person ≥0.57, different ~0.09.
+            // 5. Scan (Step C) — matches appear live. Threshold 0.35: with
+            // clean 5-point alignment + the keypoint gate (garbage crops can't
+            // reach the matcher) different people sit ~0.1 and the same person
+            // 0.35–0.99, so 0.35 recovers imperfect/turned shots while staying
+            // far above the different-person ceiling.
+            var scanConfig = LibraryScannerConfig()
+            scanConfig.matchThreshold = 0.35
             let scanner = LibraryScanner(embedder: embedder, cache: try? ScanCache(),
-                                         config: LibraryScannerConfig())
+                                         config: scanConfig)
             for try await event in scanner.scanEvents(against: profile) {
                 switch event {
                 case .progress(let p): progress = p
