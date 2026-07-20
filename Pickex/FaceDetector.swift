@@ -14,6 +14,7 @@
 import CoreML
 import CoreVideo
 import CoreGraphics
+import CoreImage
 import ImageIO
 
 public struct DetectedFace: Sendable {
