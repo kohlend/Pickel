@@ -474,10 +474,13 @@ public final class LibraryScanner: @unchecked Sendable {
         let id = PHImageManager.default().requestImage(
             for: asset, targetSize: config.targetSize,
             contentMode: .aspectFit, options: options) { ui, info in
-            let degraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue ?? false
-            if let cg = ui?.cgImage, !degraded { image = cg }
+            // fastFormat delivers exactly once, and marks that single result
+            // "degraded" — so accept THIS delivery instead of waiting for a
+            // non-degraded one that never arrives (that wait was turning every
+            // iCloud photo into a 10s timeout / failure).
+            if let cg = ui?.cgImage { image = cg }
             inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
-            if !degraded && !settled { settled = true; sem.signal() }  // final delivery or error
+            if !settled { settled = true; sem.signal() }
         }
         if sem.wait(timeout: .now() + seconds) == .timedOut {
             PHImageManager.default().cancelImageRequest(id)
