@@ -1,9 +1,33 @@
 # Pickex — Übergabe an den App-Bau
 
+## Konzept
+Pickex findet alle Fotos **deiner/deines Ex** in der Foto-Bibliothek — damit du
+sie in einem Rutsch **löschen** kannst. Emotionaler Aufhänger: „Mach Schluss,
+auch auf dem Handy." Breakup-/Digital-Cleanup-Thema. Kernflow: Ex-Foto(s) wählen →
+Bibliothek scannen → Treffer-Galerie → auswählen & löschen.
+
 Der **Erkennungs-Motor ist fertig und funktioniert** (on-device Gesichtserkennung,
 findet Fotos einer bestimmten Person in der Foto-Bibliothek — kein Backend, alles
 lokal, iOS 16+). Getestet an einer echten 9000-Foto-Bibliothek: saubere Treffer
 (0.6–0.99 für dieselbe Person, Fremde <0.15), keine Fehltreffer.
+
+## Design-Richtung (vom Nutzer vorgegeben)
+Visuelle Sprache wie die **„Win Life"-Onboarding-Screens** (der Nutzer hängt sie
+als Referenzbilder an — bitte anschauen):
+- **Vollflächige Farb-Hintergründe**, die die Stimmung je Schritt tragen
+  (Problem-Screens vs. Lösung/Fortschritt-Screens).
+- **Große fette Headline** oben, freundliches Maskottchen/Emoji.
+- **Abgerundete Karten** (Icon + Text) mit klarem Auswahl-State (Häkchen/Rahmen).
+- **Dicker Pill-Button** unten („Continue/Next/Weiter", weiß mit Pfeil-Kreis).
+- **Storytelling-Flow**: Problem → Diagnose → Potenzial → Commitment → Aktion.
+- Freundlich, spielerisch, emotional — nicht klinisch.
+
+**Farbschema: aus dem Figma des Nutzers** (nicht raten!). Datei-Key
+`oHe0VGQYar1AWzw3G2uRvd`. Farben über die Figma-MCP-Tools ziehen:
+`get_variable_defs` / `get_design_context` mit einem **node-spezifischen
+`/design/`-Link** (der Nutzer liefert ihn per „Copy link to selection"). Erst die
+echten Tokens holen, dann als SwiftUI-`Color`-Palette/Theme anlegen. Bis die Tokens
+da sind, KEINE finalen Farben festklopfen.
 
 Diese Datei ist die Spezifikation, um daraus die **richtige App** zu bauen:
 Optik + kundentauglicher Scan. Das bisherige `PickexDemoView.swift` ist nur ein
@@ -57,14 +81,22 @@ for try await event in scanner.scanEvents(against: profile) {
 
 ## Was die App braucht (der eigentliche Auftrag)
 
-### A. Optik / Screens
-1. **Onboarding/Start**: kurz erklären, Foto-Berechtigung anfragen (`.readWrite`).
-2. **Referenz wählen**: `PhotosPicker` (1–4 Fotos), Vorschau, Warnungen aus
+### A. Optik / Screens (im Win-Life-Stil, Farben aus Figma)
+1. **Onboarding-Flow** (mehrere Screens, Storytelling): „Trennung hinter dir?" →
+   „So viele Erinnerungen liegen noch auf deinem Handy" → „Pickex findet sie alle" →
+   Foto-Berechtigung anfragen (`.readWrite`). Maskottchen/Emoji, Karten, Pill-Button.
+2. **Ex wählen**: `PhotosPicker` (1–4 Fotos der/des Ex), Vorschau, Warnungen aus
    `ReferenceProfile` anzeigen („Foto 2 zeigt evtl. andere Person", „kein Gesicht" …).
-3. **Scan-Screen**: Fortschritt + Treffer-Galerie, die sich **live** füllt.
-4. **Ergebnis-Galerie**: Grid der Treffer, Tap → Vollbild, Sprung in Fotos-App,
-   Mehrfachauswahl/Teilen. Sortierung nach Ähnlichkeit oder Datum.
-5. Debug-Ausgaben raus, echte Optik rein.
+3. **Scan-Screen**: Fortschritt + Treffer-Galerie, die sich **live** füllt
+   („142 Fotos gefunden, scanne weiter…"). Lokal zuerst → sofort Ergebnisse.
+4. **Ergebnis-Galerie & LÖSCHEN** (der Kern-Payoff): Grid der Treffer,
+   Mehrfachauswahl (alle/keine), Tap → Vollbild. Primäraktion **„X Fotos löschen"**
+   via `PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(...) }`
+   — iOS zeigt den System-Löschdialog, die Fotos wandern in „Zuletzt gelöscht".
+   Optional: „In Album verschieben" / Teilen als sanftere Alternative.
+5. **Erfolg/Abschluss**: „Du hast X Erinnerungen losgelassen 💚" (Lösung-Screen,
+   grüner Hintergrund). Storytelling schließen.
+6. Debug-Ausgaben raus, echte Optik rein.
 
 ### B. Kundentauglicher Scan (der Grund für diese Übergabe)
 Ein Kunde scannt **einmal** und darf **nicht** minutenlang auf einen Balken starren.
