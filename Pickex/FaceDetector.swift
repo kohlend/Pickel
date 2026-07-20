@@ -40,9 +40,20 @@ public final class SCRFDDetector: @unchecked Sendable {
 
     public init(model: MLModel) { self.model = model }
 
+    /// CPU-only is deliberate, not a fallback: on the Neural Engine (fp16)
+    /// SCRFD's keypoint heads are numerically unstable — the same photo gives
+    /// different keypoints run to run (collapsed one time, rotated the next),
+    /// which silently poisons alignment. Offline fp32 validation is perfect at
+    /// every face size, so pin the detector to the CPU's fp32 path. The model
+    /// is 2.6MB; CPU inference is a few ms and deterministic.
     public convenience init(modelURL: URL,
-                            configuration: MLModelConfiguration = MLModelConfiguration()) throws {
-        self.init(model: try MLModel(contentsOf: modelURL, configuration: configuration))
+                            configuration: MLModelConfiguration? = nil) throws {
+        let config = configuration ?? {
+            let c = MLModelConfiguration()
+            c.computeUnits = .cpuOnly
+            return c
+        }()
+        self.init(model: try MLModel(contentsOf: modelURL, configuration: config))
     }
 
     /// Detect faces, largest first. Coordinates are in the ORIGINAL image space.
