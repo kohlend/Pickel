@@ -202,9 +202,6 @@ struct PickexDemoView: View {
             // photo on demand (needs network; first full scan takes a while,
             // results are cached so re-scans stay fast).
             scanConfig.allowNetworkAccess = true
-            // iCloud fetches are network-bound, not CPU-bound — more photos in
-            // flight keeps the pipe full while others download.
-            scanConfig.concurrentPhotos = 8
             let scanner = LibraryScanner(embedder: embedder, cache: try? ScanCache(),
                                          config: scanConfig)
             for try await event in scanner.scanEvents(against: profile) {

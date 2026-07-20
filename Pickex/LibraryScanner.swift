@@ -416,11 +416,11 @@ public final class LibraryScanner: @unchecked Sendable {
             inCloud = inCloud || fastCloud
         }
         // 2. Only when nothing usable exists locally: hit the network (when
-        //    allowed). fastFormat lets iCloud serve a resized derivative
-        //    instead of the full original — much smaller download.
+        //    allowed), but with a hard timeout so one slow/stalled download can
+        //    never block its worker — and thus the whole scan — indefinitely.
+        //    A photo that times out stays uncached and is retried next scan.
         if image == nil && config.allowNetworkAccess {
-            (image, inCloud) = request(.fastFormat, network: true)
-            if image == nil { (image, inCloud) = request(.highQualityFormat, network: true) }
+            (image, inCloud) = requestWithTimeout(for: asset, config: config, seconds: 10)
         }
         // Last resort: fetch the ORIGINAL data and downsample it ourselves via
         // ImageIO. Bypasses the Photos thumbnail pipeline entirely — some
@@ -448,6 +448,40 @@ public final class LibraryScanner: @unchecked Sendable {
                 ]
                 image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary)
             }
+        }
+        return (image, image == nil && inCloud)
+    }
+
+    /// Network image fetch with a hard timeout. Uses an ASYNCHRONOUS request
+    /// (its completion runs on PHImageManager's own queue, not the Swift
+    /// cooperative pool) and blocks the worker on a semaphore only until the
+    /// result arrives or `seconds` elapse — then cancels. This is what keeps a
+    /// stalled iCloud download from starving the concurrency pool and freezing
+    /// the whole scan (the failure mode of synchronous network requests).
+    private static func requestWithTimeout(for asset: PHAsset,
+                                           config: LibraryScannerConfig,
+                                           seconds: Double) -> (CGImage?, Bool) {
+        let options = PHImageRequestOptions()
+        options.isSynchronous = false
+        options.deliveryMode = .fastFormat        // single delivery, resized derivative
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+
+        let sem = DispatchSemaphore(value: 0)
+        var image: CGImage?
+        var inCloud = false
+        var settled = false
+        let id = PHImageManager.default().requestImage(
+            for: asset, targetSize: config.targetSize,
+            contentMode: .aspectFit, options: options) { ui, info in
+            let degraded = (info?[PHImageResultIsDegradedKey] as? NSNumber)?.boolValue ?? false
+            if let cg = ui?.cgImage, !degraded { image = cg }
+            inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
+            if !degraded && !settled { settled = true; sem.signal() }  // final delivery or error
+        }
+        if sem.wait(timeout: .now() + seconds) == .timedOut {
+            PHImageManager.default().cancelImageRequest(id)
+            return (nil, true)
         }
         return (image, image == nil && inCloud)
     }
