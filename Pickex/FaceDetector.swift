@@ -231,6 +231,12 @@ public final class SCRFDDetector: @unchecked Sendable {
                                             | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         ctx.setFillColor(CGColor(gray: 0, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        // High-quality resampling is essential: phone photos are ~5000px and
+        // get scaled ~16× into the 640 input. With CG's default interpolation
+        // that heavy downscale aliases away fine detail — the box still
+        // detects but the eye/nose/mouth keypoints collapse (eyes land on the
+        // same pixel), which wrecks alignment. .high uses a proper kernel.
+        ctx.interpolationQuality = .high
         // CG is bottom-left origin: place the image in the TOP-left region.
         ctx.draw(cgImage, in: CGRect(x: 0, y: CGFloat(side) - nh, width: nw, height: nh))
         return pb
