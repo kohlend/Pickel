@@ -24,6 +24,11 @@ public struct DetectedFace: Sendable {
 
 public final class SCRFDDetector: @unchecked Sendable {
 
+    /// Bump when FaceDetector.swift changes, so the debug UI proves the new
+    /// file is actually compiled in (the version marker lives in a different
+    /// file and can't confirm this one).
+    public static let buildTag = "det-v2-interp"
+
     private let model: MLModel
     private let inputSize = 640
     private let scoreThreshold: Float = 0.5
@@ -192,6 +197,43 @@ public final class SCRFDDetector: @unchecked Sendable {
             }
         }
         return count > 0 ? sum / Double(count) : -1
+    }
+
+    /// Debug: the exact 640×640 image fed to the model, with the top face's
+    /// box (green) and 5 keypoints (red) drawn on it. If the image is a sharp
+    /// face but the red dots pile up on one spot → model/keypoint bug. If the
+    /// image is aliased mush → the letterbox downscale is the culprit.
+    public func debugAnnotatedInput(_ cgImage: CGImage) -> CGImage? {
+        let W = cgImage.width, H = cgImage.height
+        let scale = CGFloat(inputSize) / CGFloat(max(W, H))
+        guard let buffer = letterbox(cgImage, scale: scale) else { return nil }
+        let faces = detect(cgImage, maxFaces: 1)   // decode in original coords
+        let side = inputSize
+        guard let ctx = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: colorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        // Draw the letterbox buffer as the background.
+        let ci = CIImage(cvPixelBuffer: buffer)
+        if let bg = CIContext().createCGImage(ci, from: ci.extent) {
+            ctx.draw(bg, in: CGRect(x: 0, y: 0, width: side, height: side))
+        }
+        // Original coords → 640 letterbox coords: multiply by scale. CGContext
+        // is bottom-left origin, keypoints/box are top-left → flip y.
+        func toCtx(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: p.x * scale, y: CGFloat(side) - p.y * scale)
+        }
+        if let f = faces.first {
+            ctx.setStrokeColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1)); ctx.setLineWidth(2)
+            let o = toCtx(CGPoint(x: f.bbox.minX, y: f.bbox.maxY))
+            ctx.stroke(CGRect(x: o.x, y: o.y, width: f.bbox.width * scale, height: f.bbox.height * scale))
+            ctx.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+            for k in f.keypoints {
+                let c = toCtx(k)
+                ctx.fillEllipse(in: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8))
+            }
+        }
+        return ctx.makeImage()
     }
 
     // MARK: helpers

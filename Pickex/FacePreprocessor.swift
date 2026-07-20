@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v18-interp"
+    public static let debugVersion = "v19-annot"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -131,11 +131,19 @@ public final class FacePreprocessor {
         guard let (source, _, _) = try? upright(cgImage, orientation),
               let d = detector else { return "detector unavailable" }
         let faces = d.detect(source, maxFaces: 1)
-        guard let f = faces.first else { return "no face" }
+        guard let f = faces.first else { return "no face [\(SCRFDDetector.buildTag)]" }
         let eyeDist = hypot(f.keypoints[1].x - f.keypoints[0].x, f.keypoints[1].y - f.keypoints[0].y)
-        return String(format: "img %dx%d score=%.2f box[%.0f,%.0f %.0fx%.0f] eyeDist=%.0f",
+        return String(format: "img %dx%d score=%.2f box[%.0f,%.0f %.0fx%.0f] eyeDist=%.0f [%@]",
                       source.width, source.height, f.score,
-                      f.bbox.origin.x, f.bbox.origin.y, f.bbox.width, f.bbox.height, eyeDist)
+                      f.bbox.origin.x, f.bbox.origin.y, f.bbox.width, f.bbox.height, eyeDist,
+                      SCRFDDetector.buildTag)
+    }
+
+    /// Debug: the annotated 640×640 detector input for the given photo.
+    public func debugAnnotatedInput(from cgImage: CGImage,
+                                    orientation: CGImagePropertyOrientation = .up) -> CGImage? {
+        guard let (source, _, _) = try? upright(cgImage, orientation) else { return nil }
+        return detector?.debugAnnotatedInput(source)
     }
 
     /// Debug: raw detector diagnostics (predict ok/throw, output shapes, max

@@ -59,7 +59,7 @@ struct PickexDemoView: View {
                             HStack(spacing: 4) {
                                 ForEach(Array(debugCrops.enumerated()), id: \.offset) { _, img in
                                     Image(uiImage: img)
-                                        .resizable().frame(width: 56, height: 56)
+                                        .resizable().frame(width: 120, height: 120)
                                         .border(.red)
                                 }
                             }
@@ -149,11 +149,15 @@ struct PickexDemoView: View {
             var prints: [String] = []
             prints.append("Preprocessor \(FacePreprocessor.debugVersion)")
             for (i, r) in refs.enumerated() {
-                if let res = try? pre.makeFaceInputDetailed(from: r.cgImage, orientation: r.orientation) {
-                    let ci = CIImage(cvPixelBuffer: res.pixelBuffer)
-                    if let cg = ciCtx.createCGImage(ci, from: ci.extent) {
-                        crops.append(UIImage(cgImage: cg))
-                    }
+                // The 640×640 detector input with box (green) + keypoints (red)
+                // drawn on it — shows whether the downscaled image is sharp or
+                // aliased, and whether the keypoints land on the eyes.
+                if let ann = pre.debugAnnotatedInput(from: r.cgImage, orientation: r.orientation) {
+                    crops.append(UIImage(cgImage: ann))
+                } else if let res = try? pre.makeFaceInputDetailed(from: r.cgImage, orientation: r.orientation),
+                          let cg = ciCtx.createCGImage(CIImage(cvPixelBuffer: res.pixelBuffer),
+                                                       from: CIImage(cvPixelBuffer: res.pixelBuffer).extent) {
+                    crops.append(UIImage(cgImage: cg))
                 }
                 prints.append("F\(i + 1): " + pre.debugEyeInfo(from: r.cgImage, orientation: r.orientation))
                 if let e = try? embedder.embedding(from: r.cgImage, orientation: r.orientation) {
