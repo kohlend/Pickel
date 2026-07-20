@@ -4,20 +4,28 @@
 //
 //  Photo -> aligned 112×112 CVPixelBuffer for the recognition model.
 //
-//  Detection + 5 keypoints come from the SCRFD FaceDetector (Core ML), NOT
-//  Vision — Vision's landmarks proved unreliable/nondeterministic and could not
-//  drive alignment. SCRFD's keypoints match InsightFace exactly (validated),
-//  so we do a proper 5-point similarity alignment to the ArcFace template, the
-//  same as training. That is what makes recognition robust to lighting/angle.
+//  Detection + 5 keypoints come from Apple's Vision framework
+//  (VNDetectFaceLandmarksRequest): deterministic, Apple-maintained, tuned per
+//  device. The custom SCRFD Core ML detector was retired — its keypoint heads
+//  were numerically unstable on-device (same photo, different keypoints per
+//  run), which poisoned alignment no matter how the decode was fixed.
 //
-//  The model bakes its own normalization (y = x/127.5 − 1, RGB); we hand it a
-//  plain 112×112 BGRA buffer and do NO pixel math here.
+//  From Vision's landmark regions we take pupils, nose and mouth corners and
+//  run the standard ArcFace 5-point similarity alignment. Every keypoint set
+//  must pass an anatomy gate (left-of-right eyes/mouth, eyes above nose above
+//  mouth, sane eye distance) before it may drive alignment — rotated or
+//  degenerate sets are rejected, and a rotation-retry loop recovers faces in
+//  sideways/lying-down photos.
+//
+//  The recognition model bakes its own normalization (y = x/127.5 − 1, RGB);
+//  we hand it a plain 112×112 BGRA buffer and do NO pixel math here.
 //
 
 import CoreImage
 import CoreVideo
 import CoreGraphics
 import ImageIO
+import Vision
 
 public enum FacePreprocessError: Error {
     case noFaceFound
@@ -38,12 +46,11 @@ public struct FacePreprocessorConfig {
 public final class FacePreprocessor {
 
     private let config: FacePreprocessorConfig
-    private let detector: SCRFDDetector?
     private let ciContext: CIContext
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
     /// ArcFace 112×112 reference template (top-left origin):
-    /// [left-eye, right-eye, nose, left-mouth, right-mouth].
+    /// [image-left eye, image-right eye, nose, image-left mouth, image-right mouth].
     private static let arcFaceTemplateTopLeft: [CGPoint] = [
         CGPoint(x: 38.2946, y: 51.6963),
         CGPoint(x: 73.5318, y: 51.5014),
@@ -52,23 +59,11 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v24-geom"
+    public static let debugVersion = "v25-vision"
 
-    /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
-    /// unless one is injected. Non-throwing so it can be a default argument;
-    /// detection surfaces `.detectorUnavailable` if the model is missing.
-    public init(config: FacePreprocessorConfig = FacePreprocessorConfig(),
-                detector: SCRFDDetector? = nil) {
+    public init(config: FacePreprocessorConfig = FacePreprocessorConfig()) {
         self.config = config
         self.ciContext = CIContext(options: [.cacheIntermediates: false])
-        if let detector {
-            self.detector = detector
-        } else if let url = Bundle.main.url(forResource: "FaceDetectorModel", withExtension: "mlmodelc")
-                    ?? Bundle.main.url(forResource: "FaceDetector", withExtension: "mlmodelc") {
-            self.detector = try? SCRFDDetector(modelURL: url)
-        } else {
-            self.detector = nil
-        }
     }
 
     public struct FaceCropResult {
@@ -88,9 +83,7 @@ public final class FacePreprocessor {
                                       orientation: CGImagePropertyOrientation = .up) throws -> FaceCropResult {
         let (source, faces) = try detectUsable(from: cgImage, orientation: orientation)
         let H = CGFloat(source.height)
-        // Largest usable face first.
-        let byArea = faces.sorted { $0.bbox.width*$0.bbox.height > $1.bbox.width*$1.bbox.height }
-        for face in byArea {
+        for face in faces {   // already sorted largest-first
             if let buffer = try? align(face, source: source, height: H) {
                 return FaceCropResult(pixelBuffer: buffer, faceCount: faces.count, alignedWithLandmarks: true)
             }
@@ -125,125 +118,119 @@ public final class FacePreprocessor {
         try? makeFaceInput(from: cgImage, orientation: orientation)
     }
 
-    /// Debug: largest face's score + 5 keypoints + box (SCRFD).
+    /// Debug: largest face's box + eye distance from the Vision path.
     public func debugEyeInfo(from cgImage: CGImage,
                              orientation: CGImagePropertyOrientation = .up) -> String {
-        guard let (source, _, _) = try? upright(cgImage, orientation),
-              let d = detector else { return "detector unavailable" }
-        let faces = d.detect(source, maxFaces: 1)
-        guard let raw = faces.first else { return "no face [\(SCRFDDetector.buildTag)]" }
-        let f = refineKeypoints(raw, in: source, using: d)
+        guard let (source, faces) = try? detectUsable(from: cgImage, orientation: orientation),
+              let f = faces.first else { return "no usable face [vision-v1]" }
         let eyeDist = hypot(f.keypoints[1].x - f.keypoints[0].x, f.keypoints[1].y - f.keypoints[0].y)
-        return String(format: "img %dx%d score=%.2f box[%.0f,%.0f %.0fx%.0f] eyeDist=%.0f [%@]",
+        return String(format: "img %dx%d score=%.2f box[%.0f,%.0f %.0fx%.0f] eyeDist=%.0f [vision-v1]",
                       source.width, source.height, f.score,
-                      f.bbox.origin.x, f.bbox.origin.y, f.bbox.width, f.bbox.height, eyeDist,
-                      SCRFDDetector.buildTag)
+                      f.bbox.origin.x, f.bbox.origin.y, f.bbox.width, f.bbox.height, eyeDist)
     }
 
-    /// Debug: the annotated 640×640 detector input for the given photo, with
-    /// the REFINED keypoints drawn (the ones alignment actually uses).
+    /// Debug: a ≤640px thumbnail of the photo with the largest usable face's
+    /// box (green) and 5 keypoints (red) drawn on it.
     public func debugAnnotatedInput(from cgImage: CGImage,
                                     orientation: CGImagePropertyOrientation = .up) -> CGImage? {
-        guard let (source, _, _) = try? upright(cgImage, orientation),
-              let d = detector else { return nil }
-        let refined = d.detect(source, maxFaces: 1).first
-            .map { refineKeypoints($0, in: source, using: d) }
-        return d.debugAnnotatedInput(source, face: refined)
+        guard let (source, faces) = try? detectUsable(from: cgImage, orientation: orientation),
+              let f = faces.first else { return nil }
+        let W = CGFloat(source.width), H = CGFloat(source.height)
+        let scale = min(1, 640 / max(W, H))
+        let w = Int(W * scale), h = Int(H * scale)
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: outputColorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(source, in: CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
+        // Top-left coords → this context's bottom-left coords.
+        func toCtx(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * scale, y: (H - p.y) * scale) }
+        ctx.setStrokeColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1)); ctx.setLineWidth(2)
+        let o = toCtx(CGPoint(x: f.bbox.minX, y: f.bbox.maxY))
+        ctx.stroke(CGRect(x: o.x, y: o.y, width: f.bbox.width * scale, height: f.bbox.height * scale))
+        ctx.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        for k in f.keypoints {
+            let c = toCtx(k)
+            ctx.fillEllipse(in: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8))
+        }
+        return ctx.makeImage()
     }
 
-    /// Debug: raw detector diagnostics (predict ok/throw, output shapes, max
-    /// scores) for the largest-image path. Surfaces WHY detection is empty.
-    public func debugDetectorDiagnostics(from cgImage: CGImage,
-                                         orientation: CGImagePropertyOrientation = .up) -> String {
-        guard let (source, _, _) = try? upright(cgImage, orientation) else { return "upright failed" }
-        guard let d = detector else { return "detector unavailable (model not in bundle?)" }
-        return d.diagnostics(source)
-    }
+    // MARK: detection (Vision)
 
-    // MARK: internals
-
-    /// SCRFD only handles near-upright faces: lying-down/rotated faces either
-    /// go undetected or come back with collapsed keypoints. So: bake EXIF
-    /// orientation, detect; if nothing usable, retry the image rotated 90°
-    /// left/right, then 180°. Returns the (possibly rotated) image the face
-    /// coordinates live in, plus only the faces whose keypoints pass the gate.
+    /// Detect faces + landmarks with Vision; keep only sets that pass the
+    /// anatomy gate. If nothing usable is found upright, retry the image
+    /// rotated right/left/180 so sideways (lying-down) faces still work.
+    /// Returns the (possibly rotated) image the coordinates live in, with
+    /// faces sorted largest-first.
     private func detectUsable(from cgImage: CGImage,
                               orientation: CGImagePropertyOrientation) throws -> (CGImage, [DetectedFace]) {
-        guard let detector else { throw FacePreprocessError.detectorUnavailable }
         let (base, _, _) = try upright(cgImage, orientation)
         var sawAnyFace = false
         for rotation in [CGImagePropertyOrientation.up, .right, .left, .down] {
             guard let (img, _, _) = try? upright(base, rotation) else { continue }
-            let faces = detector.detect(img, maxFaces: config.maxFaces)
+            let faces = visionFaces(in: img)
             sawAnyFace = sawAnyFace || !faces.isEmpty
-            let refined = faces.map { refineKeypoints($0, in: img, using: detector) }
-            let usable = refined.filter(passesKeypointGate)
+            let usable = faces.filter(passesKeypointGate)
             if !usable.isEmpty { return (img, usable) }
         }
         throw sawAnyFace ? FacePreprocessError.degenerateLandmarks
                          : FacePreprocessError.noFaceFound
     }
 
-    /// Two-stage keypoint refinement. The detector's keypoints are only
-    /// reliable when the face is ~230–400px in the 640 frame (measured: 231,
-    /// 293 and 394 give eyeDist ratio ~0.42–0.47; tiny faces AND huge selfie
-    /// faces both collapse onto one spot). The box, however, is right at every
-    /// size. So: stage 1 finds the box; stage 2 renders the face at exactly
-    /// 320px into a fresh 640 canvas — the proven sweet spot — re-detects, and
-    /// maps box + keypoints back into full-image coordinates.
-    private func refineKeypoints(_ face: DetectedFace, in source: CGImage,
-                                 using detector: SCRFDDetector) -> DetectedFace {
-        let side: CGFloat = 640, target: CGFloat = 320
-        let bw = max(face.bbox.width, face.bbox.height)
-        guard bw > 1 else { return face }
-        let s = target / bw
+    /// Vision faces → DetectedFace with the 5 ArcFace keypoints in top-left
+    /// pixel coordinates, sorted largest-first.
+    private func visionFaces(in source: CGImage) -> [DetectedFace] {
+        let request = VNDetectFaceLandmarksRequest()
+        let handler = VNImageRequestHandler(cgImage: source, options: [:])
+        guard (try? handler.perform([request])) != nil else { return [] }
         let W = CGFloat(source.width), H = CGFloat(source.height)
-        // Place the box center at the canvas center (CG bottom-left space).
-        let x0 = side / 2 - s * face.bbox.midX
-        let y0 = side / 2 - s * (H - face.bbox.midY)
-        guard let ctx = CGContext(data: nil, width: Int(side), height: Int(side),
-                                  bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: outputColorSpace,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return face }
-        ctx.interpolationQuality = .high
-        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
-        ctx.draw(source, in: CGRect(x: x0, y: y0, width: W * s, height: H * s))
-        guard let canvas = ctx.makeImage(),
-              let best = detector.detect(canvas, maxFaces: 1).first,
-              // Must be OUR face: near the canvas center, not some neighbor.
-              abs(best.bbox.midX - side / 2) < target / 2,
-              abs(best.bbox.midY - side / 2) < target / 2 else { return face }
-        // Canvas top-left coords → full-image top-left coords.
-        let ox = -x0 / s, oy = H - (side - y0) / s
-        func back(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / s + ox, y: p.y / s + oy) }
-        let origin = back(best.bbox.origin)
-        let bb = CGRect(x: origin.x, y: origin.y,
-                        width: best.bbox.width / s, height: best.bbox.height / s)
-        return DetectedFace(bbox: bb, keypoints: best.keypoints.map(back),
-                            score: max(face.score, best.score))
+        let size = CGSize(width: W, height: H)
+        var faces: [DetectedFace] = []
+        for obs in request.results ?? [] {
+            guard let lm = obs.landmarks,
+                  let lPupil = lm.leftPupil?.pointsInImage(imageSize: size).first,
+                  let rPupil = lm.rightPupil?.pointsInImage(imageSize: size).first,
+                  let lips = lm.outerLips?.pointsInImage(imageSize: size),
+                  lips.count >= 3 else { continue }
+            // Nose point: centroid of the nose region (robust against point
+            // ordering; small offsets are absorbed by the 5-point LSQ fit).
+            let nosePts = lm.nose?.pointsInImage(imageSize: size) ?? []
+            guard !nosePts.isEmpty else { continue }
+            let nose = CGPoint(x: nosePts.map(\.x).reduce(0, +) / CGFloat(nosePts.count),
+                               y: nosePts.map(\.y).reduce(0, +) / CGFloat(nosePts.count))
+            let mouthL = lips.min { $0.x < $1.x }!
+            let mouthR = lips.max { $0.x < $1.x }!
+            // Order eyes by image x ourselves — never trust left/right naming.
+            let eyeL = lPupil.x <= rPupil.x ? lPupil : rPupil
+            let eyeR = lPupil.x <= rPupil.x ? rPupil : lPupil
+            // Vision returns BOTTOM-LEFT-origin pixel coords; flip to top-left.
+            func tl(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x, y: H - p.y) }
+            let r = VNImageRectForNormalizedRect(obs.boundingBox, Int(W), Int(H))
+            let bbox = CGRect(x: r.minX, y: H - r.maxY, width: r.width, height: r.height)
+            faces.append(DetectedFace(bbox: bbox,
+                                      keypoints: [tl(eyeL), tl(eyeR), tl(nose), tl(mouthL), tl(mouthR)],
+                                      score: obs.confidence))
+        }
+        return faces.sorted { $0.bbox.width * $0.bbox.height > $1.bbox.width * $1.bbox.height }
     }
 
-    /// Frontal faces have eyeDist ≈ 0.35–0.45 of the box width; collapsed
-    /// keypoints (sideways/strong-profile/tiny faces) fall way below and would
-    /// align into a garbage nose-zoom crop that matches everything. Also
-    /// requires a minimum face size in source pixels: a 112px crop upscaled
-    /// from a sub-48px face is unrecognizable mush, and mush embeddings
-    /// cluster with each other — better to skip such faces entirely.
+    /// Anatomy gate (top-left coords). Rejects rotated, collapsed or otherwise
+    /// scrambled keypoint sets — the source of every garbage crop so far:
+    /// minimum face size, sane eye distance relative to the box, left-of-right
+    /// eyes and mouth corners, eyes above nose, nose above mouth.
     private func passesKeypointGate(_ face: DetectedFace) -> Bool {
         guard min(face.bbox.width, face.bbox.height) >= 48 else { return false }
-        let k = face.keypoints   // [leftEye, rightEye, nose, mouthL, mouthR], top-left coords
+        let k = face.keypoints
         let eyeDist = hypot(k[1].x - k[0].x, k[1].y - k[0].y)
         guard eyeDist >= 5, eyeDist >= 0.20 * face.bbox.width else { return false }
-        // Orientation sanity: distance alone can't tell a rotated/garbage set
-        // from a real one (a 180°-rotated set has the same eyeDist and slipped
-        // through, aligning faces upside-down). Require upright anatomy:
-        // left of right for eyes and mouth, eyes above nose, nose above mouth.
         guard k[0].x < k[1].x, k[3].x < k[4].x else { return false }
         guard max(k[0].y, k[1].y) < k[2].y, k[2].y < min(k[3].y, k[4].y) else { return false }
         return true
     }
+
+    // MARK: internals
 
     /// Upright CGImage (bakes EXIF orientation) + its size. Detection and
     /// rendering both use this single space.
