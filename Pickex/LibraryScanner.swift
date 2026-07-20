@@ -420,7 +420,7 @@ public final class LibraryScanner: @unchecked Sendable {
         //    never block its worker — and thus the whole scan — indefinitely.
         //    A photo that times out stays uncached and is retried next scan.
         if image == nil && config.allowNetworkAccess {
-            (image, inCloud) = requestWithTimeout(for: asset, config: config, seconds: 10)
+            (image, inCloud) = requestWithTimeout(for: asset, config: config, seconds: 20)
         }
         // Last resort: fetch the ORIGINAL data and downsample it ourselves via
         // ImageIO. Bypasses the Photos thumbnail pipeline entirely — some
@@ -463,7 +463,11 @@ public final class LibraryScanner: @unchecked Sendable {
                                            seconds: Double) -> (CGImage?, Bool) {
         let options = PHImageRequestOptions()
         options.isSynchronous = false
-        options.deliveryMode = .fastFormat        // single delivery, resized derivative
+        // highQualityFormat, not fastFormat: fastFormat only returns the best
+        // LOCAL rendition and won't download, so iCloud-only photos (no local
+        // preview) came back nil and failed. highQualityFormat actually pulls
+        // the asset from iCloud. resizeMode/targetSize keep it to ~1280px.
+        options.deliveryMode = .highQualityFormat
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
 
@@ -474,10 +478,8 @@ public final class LibraryScanner: @unchecked Sendable {
         let id = PHImageManager.default().requestImage(
             for: asset, targetSize: config.targetSize,
             contentMode: .aspectFit, options: options) { ui, info in
-            // fastFormat delivers exactly once, and marks that single result
-            // "degraded" — so accept THIS delivery instead of waiting for a
-            // non-degraded one that never arrives (that wait was turning every
-            // iCloud photo into a 10s timeout / failure).
+            // Single non-degraded delivery after the download completes (or an
+            // error). Accept it and unblock the worker.
             if let cg = ui?.cgImage { image = cg }
             inCloud = (info?[PHImageResultIsInCloudKey] as? NSNumber)?.boolValue ?? false
             if !settled { settled = true; sem.signal() }
