@@ -11,23 +11,72 @@ findet Fotos einer bestimmten Person in der Foto-Bibliothek — kein Backend, al
 lokal, iOS 16+). Getestet an einer echten 9000-Foto-Bibliothek: saubere Treffer
 (0.6–0.99 für dieselbe Person, Fremde <0.15), keine Fehltreffer.
 
-## Design-Richtung (vom Nutzer vorgegeben)
-Visuelle Sprache wie die **„Win Life"-Onboarding-Screens** (der Nutzer hängt sie
-als Referenzbilder an — bitte anschauen):
-- **Vollflächige Farb-Hintergründe**, die die Stimmung je Schritt tragen
-  (Problem-Screens vs. Lösung/Fortschritt-Screens).
-- **Große fette Headline** oben, freundliches Maskottchen/Emoji.
-- **Abgerundete Karten** (Icon + Text) mit klarem Auswahl-State (Häkchen/Rahmen).
-- **Dicker Pill-Button** unten („Continue/Next/Weiter", weiß mit Pfeil-Kreis).
-- **Storytelling-Flow**: Problem → Diagnose → Potenzial → Commitment → Aktion.
-- Freundlich, spielerisch, emotional — nicht klinisch.
+## Design-System (aus dem Figma des Nutzers extrahiert — verbindlich)
+FigJam-Board `oHe0VGQYar1AWzw3G2uRvd`, Section „Pickex — Brand". Look:
+dunkle Lila-Verläufe, Magenta/Coral-Akzente, einfühlsam-emotional. Der Win-Life-
+Screenshot ist nur allgemeine Qualitäts-Referenz; **maßgeblich ist dieses Figma.**
 
-**Farbschema: aus dem Figma des Nutzers** (nicht raten!). Datei-Key
-`oHe0VGQYar1AWzw3G2uRvd`. Farben über die Figma-MCP-Tools ziehen:
-`get_variable_defs` / `get_design_context` mit einem **node-spezifischen
-`/design/`-Link** (der Nutzer liefert ihn per „Copy link to selection"). Erst die
-echten Tokens holen, dann als SwiftUI-`Color`-Palette/Theme anlegen. Bis die Tokens
-da sind, KEINE finalen Farben festklopfen.
+**Farben** → als SwiftUI-`Color`-Theme anlegen (Namen beibehalten):
+| Token | Hex | Rolle |
+|---|---|---|
+| Deep Purple | `#3B1566` | BG oben |
+| Mid Purple | `#241041` | BG mitte |
+| Near Black | `#100A18` | BG unten |
+| Magenta | `#E63C9E` | Akzent |
+| Coral | `#F26B4E` | Akzent 2 |
+| Surface | `#271B37` | Karten / Chat-Bubbles |
+| Ink | `#F5F0FA` | Primärtext |
+| Muted Lavender | `#A99BC4` | Sekundärtext |
+| Delete Red | `#F04D53` | nur Löschen-Aktion |
+| Restore Green | `#4F9F7C` | Wiederherstellen/Erfolg |
+
+**Verläufe**: Akzent `#E63C9E → #F26B4E` (90°) · Hintergrund
+`#3B1566 → #241041 → #100A18` (vertikal, auf fast allen Screens).
+
+**Typografie**: Headlines/Card-Titel = **New York** (iOS-Serif, fallback Georgia),
+Display 28–30pt Semibold / Title 21–22pt Semibold, line-height 1.2, tracking −1%.
+Chat & UI = **SF Pro** (fallback system-ui), Body/Bubble 14.5–15pt Regular,
+Button 15–16pt Semibold, Caption 11–12pt.
+
+**Markenstimme**: „pickex" ist ein **Chat-Begleiter** („online · here for you") —
+warm, aber ehrlich/tough-love. Beispiele aus dem Flow unten.
+
+## Screen-Flow (13 Screens, exakt aus dem Figma)
+Header-Chip „pickex · online · here for you" auf den Chat-Screens.
+1. **00 Intro (Chat)**: Bubbles „Hey. 👋" · „Honestly? I don't love that you need
+   an app like this. 😢" · „Breakups are hard enough." · „But I'm here to make one
+   part easier. First — what should I call you?" → Namens-Eingabefeld.
+2. **01 Name + Video (Chat)**: „Don't be sad, {name}. Better times are coming. 💜" ·
+   „Quick thing before we start — watch this 👇" · Video-Teaser („80%", 4 sec).
+3. **02 Stat (Fullscreen)**: groß „80%" · „of people who break up still keep their
+   ex's photos." · „Let's change that." · Continue.
+4. **03 Foto-Zugriff**: „Access to your photos" · „So we can find and remove the
+   photos, we need access… Everything is processed only on your iPhone." · Bullets:
+   No photo ever leaves your device / No account, no cloud / Revoke access anytime ·
+   **Allow access** → `PHPhotoLibrary.requestAuthorization(for: .readWrite)`.
+5. **04 Referenzfotos**: „Whose photos should go?" · „Pick 1–4 photos with a clearly
+   visible face…" · Grid mit Foto-Slots (PhotosPicker) · Tipp: verschiedene Winkel/
+   Licht · **Start search** → `ReferenceProfileBuilder.build`.
+6. **05 Scanning**: Kreis-Progress „74%" · „918 of 1,240 photos" · „Searching your
+   library" · „Running entirely on your device — no upload, no cloud." · Cancel.
+   → `LibraryScanner.scanEvents` (lokal zuerst, iCloud im Hintergrund).
+7. **06 Choice**: „Found {n} photos of them. How do you want to do this?" →
+   **Delete them all — I trust you** / **Let me check first**.
+8. **07 Msg – blind** (nach „trust you"): „Don't worry — they'll stay in your
+   Recently Deleted for 30 days. Just in case." · **Delete them**.
+9. **08 Msg – review** (nach „check first"): „Alright — just this once. But don't
+   keep anything. You need to let go." · **Show me the photos**.
+10. **09 Results**: „{n} photos found" · „Deselect all" · Foto-Grid (4 Spalten,
+    Mehrfachauswahl) · **Delete {k} photos** · „Unlock once to remove photos".
+11. **10 Paywall**: „Pay once. Use forever." · Bullets: Unlimited searches & people /
+    Find every photo in seconds / No subscription, no hidden fees · **Unlock for
+    €6.99** · Restore purchase · „One-time purchase, billed to your App Store account."
+    (StoreKit 2, Non-Consumable. Gate: Löschen erst nach Kauf.)
+12. **11 Confirm (Sheet)**: „Delete {k} photos? They go to 'Recently Deleted' for
+    30 days, then they're gone for good." · **Delete** / Cancel → `PHPhotoLibrary`
+    `deleteAssets`.
+13. **12 Done**: „Space for something new." · „{k} photos are gone from your library.
+    Onward, {name}." · **Start over**.
 
 Diese Datei ist die Spezifikation, um daraus die **richtige App** zu bauen:
 Optik + kundentauglicher Scan. Das bisherige `PickexDemoView.swift` ist nur ein
@@ -81,22 +130,18 @@ for try await event in scanner.scanEvents(against: profile) {
 
 ## Was die App braucht (der eigentliche Auftrag)
 
-### A. Optik / Screens (im Win-Life-Stil, Farben aus Figma)
-1. **Onboarding-Flow** (mehrere Screens, Storytelling): „Trennung hinter dir?" →
-   „So viele Erinnerungen liegen noch auf deinem Handy" → „Pickex findet sie alle" →
-   Foto-Berechtigung anfragen (`.readWrite`). Maskottchen/Emoji, Karten, Pill-Button.
-2. **Ex wählen**: `PhotosPicker` (1–4 Fotos der/des Ex), Vorschau, Warnungen aus
-   `ReferenceProfile` anzeigen („Foto 2 zeigt evtl. andere Person", „kein Gesicht" …).
-3. **Scan-Screen**: Fortschritt + Treffer-Galerie, die sich **live** füllt
-   („142 Fotos gefunden, scanne weiter…"). Lokal zuerst → sofort Ergebnisse.
-4. **Ergebnis-Galerie & LÖSCHEN** (der Kern-Payoff): Grid der Treffer,
-   Mehrfachauswahl (alle/keine), Tap → Vollbild. Primäraktion **„X Fotos löschen"**
-   via `PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(...) }`
-   — iOS zeigt den System-Löschdialog, die Fotos wandern in „Zuletzt gelöscht".
-   Optional: „In Album verschieben" / Teilen als sanftere Alternative.
-5. **Erfolg/Abschluss**: „Du hast X Erinnerungen losgelassen 💚" (Lösung-Screen,
-   grüner Hintergrund). Storytelling schließen.
-6. Debug-Ausgaben raus, echte Optik rein.
+### A. Optik / Screens
+Der komplette Screen-Flow steht oben („Screen-Flow, 13 Screens") mit Texten und
+Aktionen. Umsetzen im Figma-Look (Lila-Verlauf-Hintergrund, Magenta/Coral-Akzente,
+New-York-Headlines, SF-Pro-Body, Chat-Bubbles). Debug-Ausgaben des Demos raus.
+Technische Ankerpunkte:
+- **Löschen** (Screen 11): `PHPhotoLibrary.shared().performChanges {
+  PHAssetChangeRequest.deleteAssets(assets as NSFastEnumeration) }` — iOS zeigt den
+  System-Löschdialog, Fotos wandern in „Zuletzt gelöscht" (30 Tage).
+- **Paywall** (Screen 10): StoreKit 2, ein Non-Consumable „Unlock" (€6.99). Löschen
+  erst nach erfolgreichem Kauf freischalten; Restore anbieten.
+- **Live-Ergebnisse**: Scan-Screen (05) zeigt Fortschritt; Treffer fließen live rein,
+  Results (09) ist das gefüllte Grid.
 
 ### B. Kundentauglicher Scan (der Grund für diese Übergabe)
 Ein Kunde scannt **einmal** und darf **nicht** minutenlang auf einen Balken starren.
