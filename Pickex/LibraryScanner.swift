@@ -384,12 +384,13 @@ public final class LibraryScanner: @unchecked Sendable {
     /// `.highQualityFormat` before giving up.
     private static func requestCGImage(for asset: PHAsset,
                                        config: LibraryScannerConfig) -> (CGImage?, Bool) {
-        func request(_ mode: PHImageRequestOptionsDeliveryMode) -> (CGImage?, Bool) {
+        func request(_ mode: PHImageRequestOptionsDeliveryMode,
+                     network: Bool) -> (CGImage?, Bool) {
             let options = PHImageRequestOptions()
             options.isSynchronous = true        // we're already in a worker task
             options.deliveryMode = mode
             options.resizeMode = .fast
-            options.isNetworkAccessAllowed = config.allowNetworkAccess
+            options.isNetworkAccessAllowed = network
 
             var image: CGImage?
             var inCloud = false
@@ -403,14 +404,23 @@ public final class LibraryScanner: @unchecked Sendable {
             return (image, inCloud)
         }
 
-        // .highQualityFormat first: .fastFormat may return a heavily degraded
-        // tiny thumbnail ("sacrifice quality for speed"), and a 112px face
-        // crop from a ~80px face is too blurred to match — embeddings land
-        // below threshold with no visible error. Decode stays cheap because
-        // targetSize caps it at 640px.
-        var (image, inCloud) = request(.highQualityFormat)
-        if image == nil && !inCloud {
-            (image, inCloud) = request(.fastFormat)
+        // 1. LOCAL first, even for iCloud-only assets: with "optimize storage"
+        //    the device already holds a screen-size preview of nearly every
+        //    photo, and that is plenty for detection + a 112px crop. Only a
+        //    too-small preview (tiny thumbnail) is rejected — recognition on
+        //    it would silently underperform.
+        var (image, inCloud) = request(.highQualityFormat, network: false)
+        if image == nil {
+            let (fast, fastCloud) = request(.fastFormat, network: false)
+            if let fast, max(fast.width, fast.height) >= 700 { image = fast }
+            inCloud = inCloud || fastCloud
+        }
+        // 2. Only when nothing usable exists locally: hit the network (when
+        //    allowed). fastFormat lets iCloud serve a resized derivative
+        //    instead of the full original — much smaller download.
+        if image == nil && config.allowNetworkAccess {
+            (image, inCloud) = request(.fastFormat, network: true)
+            if image == nil { (image, inCloud) = request(.highQualityFormat, network: true) }
         }
         // Last resort: fetch the ORIGINAL data and downsample it ourselves via
         // ImageIO. Bypasses the Photos thumbnail pipeline entirely — some
