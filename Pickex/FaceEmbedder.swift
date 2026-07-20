@@ -23,6 +23,9 @@ public enum FaceEmbeddingError: Error {
     case predictionFailed(Error)
     case outputMissing(String)        // named output not present
     case unexpectedOutputSize(Int)    // != expected dimensionality
+    /// The crop's embedding norm is far below what real faces produce —
+    /// the crop is blur/garbage, not a recognizable face.
+    case lowQualityCrop(norm: Float)
 }
 
 public final class FaceEmbedder: @unchecked Sendable {
@@ -110,10 +113,20 @@ public final class FaceEmbedder: @unchecked Sendable {
 
     // MARK: model plumbing
 
+    /// Below this raw-embedding norm the crop is not a recognizable face.
+    /// Measured with the real R50 model: proper faces 17–43, black/gray/noise
+    /// crops 6–10. Garbage embeddings cluster with each other (cos ~0.6) and
+    /// caused 0.8+ false matches, so they must never reach the matcher.
+    public static let minEmbeddingNorm: Float = 14
+
     /// Runs the model, optionally adding the flipped crop's embedding.
     /// Returns the (unnormalized) sum; callers L2-normalize downstream.
     private func runModel(on buffer: CVPixelBuffer) throws -> [Float] {
         var vector = try predict(on: buffer)
+        let norm = sqrt(vector.reduce(0) { $0 + $1 * $1 })
+        guard norm >= Self.minEmbeddingNorm else {
+            throw FaceEmbeddingError.lowQualityCrop(norm: norm)
+        }
         if useFlipAugmentation, let flipped = horizontallyFlipped(buffer) {
             if let v2 = try? predict(on: flipped) {
                 for i in vector.indices { vector[i] += v2[i] }

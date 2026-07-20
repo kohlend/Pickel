@@ -124,8 +124,12 @@ public struct LibraryScannerConfig {
     public var matchThreshold: Float = LibraryScanner.defaultMatchThreshold
     /// How faces are scored against the reference profile.
     public var matchingStrategy: MatchingStrategy = .combined
-    /// Decode size for library photos (longest side, pixels).
-    public var targetSize = CGSize(width: 640, height: 640)
+    /// Decode size for library photos (longest side, pixels). 1280 (not 640):
+    /// group-photo faces are tiny fractions of the frame — at 640 they end up
+    /// ~25-50px, and a 112px crop upscaled from that is mush. Mush embeddings
+    /// cluster together and produced 0.8+ false matches. At 1280 the same
+    /// faces carry enough pixels to embed honestly.
+    public var targetSize = CGSize(width: 1280, height: 1280)
     /// Max faces embedded per photo (largest first).
     public var maxFacesPerPhoto: Int = 8
     /// Photos in flight at once — this bounds peak memory.

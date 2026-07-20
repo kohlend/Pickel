@@ -204,11 +204,14 @@ public final class SCRFDDetector: @unchecked Sendable {
     /// box (green) and 5 keypoints (red) drawn on it. If the image is a sharp
     /// face but the red dots pile up on one spot → model/keypoint bug. If the
     /// image is aliased mush → the letterbox downscale is the culprit.
-    public func debugAnnotatedInput(_ cgImage: CGImage) -> CGImage? {
+    public func debugAnnotatedInput(_ cgImage: CGImage,
+                                    face: DetectedFace? = nil) -> CGImage? {
         let W = cgImage.width, H = cgImage.height
         let scale = CGFloat(inputSize) / CGFloat(max(W, H))
         guard let buffer = letterbox(cgImage, scale: scale) else { return nil }
-        let faces = detect(cgImage, maxFaces: 1)   // decode in original coords
+        // Draw the caller-provided (e.g. refined) face if given; otherwise
+        // fall back to a raw stage-1 detection.
+        let faces = face.map { [$0] } ?? detect(cgImage, maxFaces: 1)
         let side = inputSize
         guard let ctx = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
                                   bytesPerRow: 0, space: colorSpace,

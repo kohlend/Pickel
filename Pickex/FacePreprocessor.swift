@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v21-normref"
+    public static let debugVersion = "v22-quality"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -140,11 +140,15 @@ public final class FacePreprocessor {
                       SCRFDDetector.buildTag)
     }
 
-    /// Debug: the annotated 640×640 detector input for the given photo.
+    /// Debug: the annotated 640×640 detector input for the given photo, with
+    /// the REFINED keypoints drawn (the ones alignment actually uses).
     public func debugAnnotatedInput(from cgImage: CGImage,
                                     orientation: CGImagePropertyOrientation = .up) -> CGImage? {
-        guard let (source, _, _) = try? upright(cgImage, orientation) else { return nil }
-        return detector?.debugAnnotatedInput(source)
+        guard let (source, _, _) = try? upright(cgImage, orientation),
+              let d = detector else { return nil }
+        let refined = d.detect(source, maxFaces: 1).first
+            .map { refineKeypoints($0, in: source, using: d) }
+        return d.debugAnnotatedInput(source, face: refined)
     }
 
     /// Debug: raw detector diagnostics (predict ok/throw, output shapes, max
@@ -223,8 +227,12 @@ public final class FacePreprocessor {
 
     /// Frontal faces have eyeDist ≈ 0.35–0.45 of the box width; collapsed
     /// keypoints (sideways/strong-profile/tiny faces) fall way below and would
-    /// align into a garbage nose-zoom crop that matches everything.
+    /// align into a garbage nose-zoom crop that matches everything. Also
+    /// requires a minimum face size in source pixels: a 112px crop upscaled
+    /// from a sub-48px face is unrecognizable mush, and mush embeddings
+    /// cluster with each other — better to skip such faces entirely.
     private func passesKeypointGate(_ face: DetectedFace) -> Bool {
+        guard min(face.bbox.width, face.bbox.height) >= 48 else { return false }
         let eyeDist = hypot(face.keypoints[1].x - face.keypoints[0].x,
                             face.keypoints[1].y - face.keypoints[0].y)
         return eyeDist >= 5 && eyeDist >= 0.20 * face.bbox.width

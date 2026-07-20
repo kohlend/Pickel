@@ -154,9 +154,11 @@ struct PickexDemoView: View {
                 // aliased, and whether the keypoints land on the eyes.
                 if let ann = pre.debugAnnotatedInput(from: r.cgImage, orientation: r.orientation) {
                     crops.append(UIImage(cgImage: ann))
-                } else if let res = try? pre.makeFaceInputDetailed(from: r.cgImage, orientation: r.orientation),
-                          let cg = ciCtx.createCGImage(CIImage(cvPixelBuffer: res.pixelBuffer),
-                                                       from: CIImage(cvPixelBuffer: res.pixelBuffer).extent) {
+                }
+                // ...plus the actual 112×112 crop the recognition model eats.
+                if let res = try? pre.makeFaceInputDetailed(from: r.cgImage, orientation: r.orientation),
+                   let cg = ciCtx.createCGImage(CIImage(cvPixelBuffer: res.pixelBuffer),
+                                                from: CIImage(cvPixelBuffer: res.pixelBuffer).extent) {
                     crops.append(UIImage(cgImage: cg))
                 }
                 prints.append("F\(i + 1): " + pre.debugEyeInfo(from: r.cgImage, orientation: r.orientation))
