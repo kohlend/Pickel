@@ -55,11 +55,13 @@ struct PickexDemoView: View {
                 if !debugInfo.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("DEBUG — Crops, wie sie das Modell sieht:").font(.caption2)
-                        HStack(spacing: 4) {
-                            ForEach(Array(debugCrops.enumerated()), id: \.offset) { _, img in
-                                Image(uiImage: img)
-                                    .resizable().frame(width: 56, height: 56)
-                                    .border(.red)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 4) {
+                                ForEach(Array(debugCrops.enumerated()), id: \.offset) { _, img in
+                                    Image(uiImage: img)
+                                        .resizable().frame(width: 56, height: 56)
+                                        .border(.red)
+                                }
                             }
                         }
                         Text(debugInfo).font(.system(size: 9, design: .monospaced))
@@ -201,24 +203,27 @@ struct PickexDemoView: View {
                     loadThumbnail(for: m.assetLocalIdentifier)
                 }
             }
-            // DEBUG: render the SCAN-side crop of the top match, to compare
-            // against the reference-side crop (same photo should look + embed
-            // the same; a difference means a scan-path/loading bug).
-            if let top = matches.first,
-               let scanCG = scanner.debugLoadImage(assetID: top.assetLocalIdentifier) {
-                if let res = try? pre.makeFaceInputDetailed(from: scanCG) {
-                    let ci = CIImage(cvPixelBuffer: res.pixelBuffer)
-                    if let cg = ciCtx.createCGImage(ci, from: ci.extent) {
-                        debugCrops.append(UIImage(cgImage: cg))
-                    }
+            // DEBUG: render the SCAN-side crop of the TOP matches so we can see
+            // whether false positives (wrong person at 0.9) come from corrupted
+            // crops (alignment bug) or a bad reference. A garbage crop that
+            // matches everything shows up here as a warped/nonsense thumbnail.
+            debugCrops = []   // replace the reference crops with the match crops
+            var lines = ["MATCH-Crops v\(FacePreprocessor.debugVersion):"]
+            for m in matches.prefix(8) {
+                guard let scanCG = scanner.debugLoadImage(assetID: m.assetLocalIdentifier) else { continue }
+                if let res = try? pre.makeFaceInputDetailed(from: scanCG),
+                   let cg = ciCtx.createCGImage(CIImage(cvPixelBuffer: res.pixelBuffer),
+                                                from: CIImage(cvPixelBuffer: res.pixelBuffer).extent) {
+                    debugCrops.append(UIImage(cgImage: cg))
                 }
-                var line = "SCAN top \(String(format: "%.2f", top.similarity)): " + pre.debugEyeInfo(from: scanCG)
+                var line = String(format: "%.2f ", m.similarity) + pre.debugEyeInfo(from: scanCG)
                 if let e = try? embedder.embedding(from: scanCG) {
                     let v = e.vector; let n = sqrt(v.reduce(0) { $0 + $1 * $1 })
-                    line += String(format: "  emb norm=%.2f [%+.2f %+.2f %+.2f]", n, v[0], v[1], v[2])
+                    line += String(format: " norm=%.1f", n)
                 }
-                debugInfo += "\n" + line
+                lines.append(line)
             }
+            debugInfo = lines.joined(separator: "\n")
             status = "Fertig: \(matches.count) Treffer."
         } catch ReferenceProfileError.noFaceInAnyPhoto(let skipped) {
             let details = skipped.map { s -> String in
