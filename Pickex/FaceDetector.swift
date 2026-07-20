@@ -28,7 +28,7 @@ public final class SCRFDDetector: @unchecked Sendable {
     /// Bump when FaceDetector.swift changes, so the debug UI proves the new
     /// file is actually compiled in (the version marker lives in a different
     /// file and can't confirm this one).
-    public static let buildTag = "det-v2-interp"
+    public static let buildTag = "det-v3-cpu"
 
     private let model: MLModel
     private let inputSize = 640

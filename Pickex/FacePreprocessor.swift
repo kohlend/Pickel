@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v23-cpudet"
+    public static let debugVersion = "v24-geom"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -233,9 +233,16 @@ public final class FacePreprocessor {
     /// cluster with each other — better to skip such faces entirely.
     private func passesKeypointGate(_ face: DetectedFace) -> Bool {
         guard min(face.bbox.width, face.bbox.height) >= 48 else { return false }
-        let eyeDist = hypot(face.keypoints[1].x - face.keypoints[0].x,
-                            face.keypoints[1].y - face.keypoints[0].y)
-        return eyeDist >= 5 && eyeDist >= 0.20 * face.bbox.width
+        let k = face.keypoints   // [leftEye, rightEye, nose, mouthL, mouthR], top-left coords
+        let eyeDist = hypot(k[1].x - k[0].x, k[1].y - k[0].y)
+        guard eyeDist >= 5, eyeDist >= 0.20 * face.bbox.width else { return false }
+        // Orientation sanity: distance alone can't tell a rotated/garbage set
+        // from a real one (a 180°-rotated set has the same eyeDist and slipped
+        // through, aligning faces upside-down). Require upright anatomy:
+        // left of right for eyes and mouth, eyes above nose, nose above mouth.
+        guard k[0].x < k[1].x, k[3].x < k[4].x else { return false }
+        guard max(k[0].y, k[1].y) < k[2].y, k[2].y < min(k[3].y, k[4].y) else { return false }
+        return true
     }
 
     /// Upright CGImage (bakes EXIF orientation) + its size. Detection and
