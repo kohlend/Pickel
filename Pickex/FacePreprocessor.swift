@@ -52,7 +52,7 @@ public final class FacePreprocessor {
         CGPoint(x: 70.7299, y: 92.2041),
     ]
 
-    public static let debugVersion = "v20-refine"
+    public static let debugVersion = "v21-normref"
 
     /// Loads the SCRFD detector from the app bundle ("FaceDetector.mlpackage")
     /// unless one is injected. Non-throwing so it can be a default argument;
@@ -132,7 +132,7 @@ public final class FacePreprocessor {
               let d = detector else { return "detector unavailable" }
         let faces = d.detect(source, maxFaces: 1)
         guard let raw = faces.first else { return "no face [\(SCRFDDetector.buildTag)]" }
-        let f = refineIfSmall(raw, in: source, using: d)
+        let f = refineKeypoints(raw, in: source, using: d)
         let eyeDist = hypot(f.keypoints[1].x - f.keypoints[0].x, f.keypoints[1].y - f.keypoints[0].y)
         return String(format: "img %dx%d score=%.2f box[%.0f,%.0f %.0fx%.0f] eyeDist=%.0f [%@]",
                       source.width, source.height, f.score,
@@ -172,7 +172,7 @@ public final class FacePreprocessor {
             guard let (img, _, _) = try? upright(base, rotation) else { continue }
             let faces = detector.detect(img, maxFaces: config.maxFaces)
             sawAnyFace = sawAnyFace || !faces.isEmpty
-            let refined = faces.map { refineIfSmall($0, in: img, using: detector) }
+            let refined = faces.map { refineKeypoints($0, in: img, using: detector) }
             let usable = refined.filter(passesKeypointGate)
             if !usable.isEmpty { return (img, usable) }
         }
@@ -180,28 +180,44 @@ public final class FacePreprocessor {
                          : FacePreprocessError.noFaceFound
     }
 
-    /// Two-stage detection for small faces. The Core ML detector's keypoint
-    /// head is only reliable when the face is large in the 640 frame (the
-    /// stride-32 path); for distant faces the box is fine but the keypoints
-    /// collapse onto one spot. Fix: crop the detected box (with margin) from
-    /// the full-resolution image and run detection again on the crop — the
-    /// face now fills the frame, keypoints come from the reliable path, and
-    /// we map them back into full-image coordinates.
-    private func refineIfSmall(_ face: DetectedFace, in source: CGImage,
-                               using detector: SCRFDDetector) -> DetectedFace {
+    /// Two-stage keypoint refinement. The detector's keypoints are only
+    /// reliable when the face is ~230–400px in the 640 frame (measured: 231,
+    /// 293 and 394 give eyeDist ratio ~0.42–0.47; tiny faces AND huge selfie
+    /// faces both collapse onto one spot). The box, however, is right at every
+    /// size. So: stage 1 finds the box; stage 2 renders the face at exactly
+    /// 320px into a fresh 640 canvas — the proven sweet spot — re-detects, and
+    /// maps box + keypoints back into full-image coordinates.
+    private func refineKeypoints(_ face: DetectedFace, in source: CGImage,
+                                 using detector: SCRFDDetector) -> DetectedFace {
+        let side: CGFloat = 640, target: CGFloat = 320
+        let bw = max(face.bbox.width, face.bbox.height)
+        guard bw > 1 else { return face }
+        let s = target / bw
         let W = CGFloat(source.width), H = CGFloat(source.height)
-        let sizeAt640 = max(face.bbox.width, face.bbox.height) * 640 / max(W, H)
-        guard sizeAt640 < 180 else { return face }   // big already → reliable
-        let side = max(face.bbox.width, face.bbox.height) * 1.8
-        let crop = CGRect(x: face.bbox.midX - side / 2, y: face.bbox.midY - side / 2,
-                          width: side, height: side)
-            .intersection(CGRect(x: 0, y: 0, width: W, height: H)).integral
-        guard crop.width >= 40, crop.height >= 40,
-              let cropped = source.cropping(to: crop),
-              let best = detector.detect(cropped, maxFaces: 1).first else { return face }
-        let dx = crop.origin.x, dy = crop.origin.y
-        return DetectedFace(bbox: best.bbox.offsetBy(dx: dx, dy: dy),
-                            keypoints: best.keypoints.map { CGPoint(x: $0.x + dx, y: $0.y + dy) },
+        // Place the box center at the canvas center (CG bottom-left space).
+        let x0 = side / 2 - s * face.bbox.midX
+        let y0 = side / 2 - s * (H - face.bbox.midY)
+        guard let ctx = CGContext(data: nil, width: Int(side), height: Int(side),
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: outputColorSpace,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                            | CGBitmapInfo.byteOrder32Little.rawValue) else { return face }
+        ctx.interpolationQuality = .high
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        ctx.draw(source, in: CGRect(x: x0, y: y0, width: W * s, height: H * s))
+        guard let canvas = ctx.makeImage(),
+              let best = detector.detect(canvas, maxFaces: 1).first,
+              // Must be OUR face: near the canvas center, not some neighbor.
+              abs(best.bbox.midX - side / 2) < target / 2,
+              abs(best.bbox.midY - side / 2) < target / 2 else { return face }
+        // Canvas top-left coords → full-image top-left coords.
+        let ox = -x0 / s, oy = H - (side - y0) / s
+        func back(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / s + ox, y: p.y / s + oy) }
+        let origin = back(best.bbox.origin)
+        let bb = CGRect(x: origin.x, y: origin.y,
+                        width: best.bbox.width / s, height: best.bbox.height / s)
+        return DetectedFace(bbox: bb, keypoints: best.keypoints.map(back),
                             score: max(face.score, best.score))
     }
 
