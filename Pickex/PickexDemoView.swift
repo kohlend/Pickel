@@ -198,6 +198,10 @@ struct PickexDemoView: View {
             // far above the different-person ceiling.
             var scanConfig = LibraryScannerConfig()
             scanConfig.matchThreshold = 0.35
+            // Also scan iCloud-only photos: downloads a 1280px version per
+            // photo on demand (needs network; first full scan takes a while,
+            // results are cached so re-scans stay fast).
+            scanConfig.allowNetworkAccess = true
             let scanner = LibraryScanner(embedder: embedder, cache: try? ScanCache(),
                                          config: scanConfig)
             for try await event in scanner.scanEvents(against: profile) {
