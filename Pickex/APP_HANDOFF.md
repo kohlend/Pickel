@@ -11,6 +11,32 @@ findet Fotos einer bestimmten Person in der Foto-Bibliothek — kein Backend, al
 lokal, iOS 16+). Getestet an einer echten 9000-Foto-Bibliothek: saubere Treffer
 (0.6–0.99 für dieselbe Person, Fremde <0.15), keine Fehltreffer.
 
+## ⚠️ RELEASE-BLOCKER: Modell-Lizenz (vor App-Store-Launch klären)
+Die App hat eine **Paywall (€6.99)** → kommerzielle Nutzung. Das aktuell
+verbaute Erkennungsmodell darf so **nicht kommerziell** ausgeliefert werden:
+
+| Bestandteil | Lizenz | kommerziell? |
+|---|---|---|
+| InsightFace-Code | MIT | ✅ |
+| **`FaceEmbeddingR50.mlpackage`** (aus `w600k_r50`, trainiert auf WebFace600K) | non-commercial research only | ❌ **Blocker** |
+| Gesichtserkennung (Apple Vision) | Apple SDK | ✅ |
+
+Details + geprüfte Alternativen: `MobileFaceNet-CoreML/README.md` §1. Alle
+frei verfügbaren Face-Embedding-Gewichte (EdgeFace, GhostFaceNets, synthetische
+Modelle) sind ebenfalls non-commercial — das ist der Zustand des Feldes, kein
+Rechercheversäumnis.
+
+**Vor Launch eine dieser Optionen:**
+1. Kommerzielle Lizenz bei InsightFace kaufen (`recognition-oss-pack@insightface.ai`)
+   — der schnellste Weg, sie verkaufen die buffalo-Packs.
+2. Eigenes Training auf kommerziell lizenzierten Daten.
+3. Anderes Embedding-Modell einsetzen.
+
+**Für den App-Bau blockiert das nichts**: die Pipeline ist modell-agnostisch —
+jedes ONNX `[1,3,112,112] → [1,512]` lässt sich per `convert.py` eintauschen,
+ohne dass App- oder Engine-Code sich ändert. Also weiterbauen, aber die Lizenz
+vor Veröffentlichung klären.
+
 ## Design-System (aus dem Figma des Nutzers extrahiert — verbindlich)
 FigJam-Board `oHe0VGQYar1AWzw3G2uRvd`, Section „Pickex — Brand". Look:
 dunkle Lila-Verläufe, Magenta/Coral-Akzente, einfühlsam-emotional. Der Win-Life-
