@@ -26,11 +26,21 @@ frei verfügbaren Face-Embedding-Gewichte (EdgeFace, GhostFaceNets, synthetische
 Modelle) sind ebenfalls non-commercial — das ist der Zustand des Feldes, kein
 Rechercheversäumnis.
 
-**Vor Launch eine dieser Optionen:**
-1. Kommerzielle Lizenz bei InsightFace kaufen (`recognition-oss-pack@insightface.ai`)
-   — der schnellste Weg, sie verkaufen die buffalo-Packs.
-2. Eigenes Training auf kommerziell lizenzierten Daten.
-3. Anderes Embedding-Modell einsetzen.
+**Vor Launch eine dieser Optionen — in dieser Reihenfolge prüfen:**
+1. **AuraFace (fal.ai) testen — gratis, wahrscheinlich bester Weg.**
+   `fal/AuraFace-v1` auf HuggingFace: ArcFace-Architektur, **Apache 2.0**, trainiert
+   auf einem kommerziell lizenzierten Datensatz, liegt als **ONNX** vor → passt
+   direkt in `convert.py`, kein App-/Engine-Code ändert sich.
+   *Einschränkung laut Autoren:* erreicht nicht die Genauigkeit des Original-ArcFace
+   (kleinerer Datensatz), Ethnien-Abdeckung ungleichmäßig. **Also messen, nicht
+   annehmen**: konvertieren, ins Bundle statt `FaceEmbeddingR50`, neu scannen und
+   die Scores gegen die bisherigen Ergebnisse halten (gleiche Person soll ≥0.6
+   bleiben, Fremde <0.2). Lizenz/Modellkarte vor Launch selbst gegenlesen.
+2. Kommerzielle Lizenz bei InsightFace kaufen (`recognition-oss-pack@insightface.ai`)
+   — kein öffentlicher Preis, individuelles Angebot; als on-device-Einzelprodukt
+   anfragen. Nur nötig, wenn AuraFace qualitativ abfällt.
+3. Eigenes Training auf kommerziell lizenzierten Daten (teuer, langsam).
+4. dlib-ResNet (Public Domain, aber 128-d, älter, kein ONNX → Portierungsaufwand).
 
 **Für den App-Bau blockiert das nichts**: die Pipeline ist modell-agnostisch —
 jedes ONNX `[1,3,112,112] → [1,512]` lässt sich per `convert.py` eintauschen,
